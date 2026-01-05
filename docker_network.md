@@ -531,6 +531,10 @@ docker container exec box1 ping -c 3 <box2-ip>
 
 The ping will timeout or fail because the networks are isolated.
 
+### PWD Note
+
+⚠️ **Play with Docker Limitation**: Due to PWD's Docker-in-Docker setup, network isolation may not work correctly. The ping might succeed in PWD even though it should fail. On a standard Docker installation (local machine, VM, or cloud instance), the ping will correctly timeout or fail.
+
 Cleanup:
 
 ```bash
