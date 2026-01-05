@@ -13,6 +13,7 @@ set -e  # Exit on any error
 
 # Configuration
 CLUSTER_NAME="kind-cluster"
+DOCKER_GROUP_CHANGED=false
 
 # Colors for output
 RED='\033[0;31m'
@@ -46,6 +47,18 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
+# Get the actual user who invoked sudo (not root)
+if [[ -n "$SUDO_USER" ]]; then
+    ACTUAL_USER="$SUDO_USER"
+    ACTUAL_USER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+else
+    echo_error "Please run this script with sudo, not as root directly."
+    echo_info "Usage: sudo ./install_kind.sh"
+    exit 1
+fi
+
+echo_info "Installing for user: $ACTUAL_USER (home: $ACTUAL_USER_HOME)"
+
 # Check if Docker is installed
 echo_info "Checking Docker installation..."
 if ! command -v docker &> /dev/null; then
@@ -63,6 +76,19 @@ fi
 
 echo_info "Docker is installed and running."
 docker --version
+
+#######################################################################
+# Add user to docker group (so they don't need sudo for docker/kind)
+#######################################################################
+echo_info "Ensuring user '$ACTUAL_USER' is in the docker group..."
+if groups "$ACTUAL_USER" | grep -q '\bdocker\b'; then
+    echo_info "User '$ACTUAL_USER' is already in the docker group."
+else
+    echo_info "Adding user '$ACTUAL_USER' to the docker group..."
+    usermod -aG docker "$ACTUAL_USER"
+    echo_info "User '$ACTUAL_USER' added to docker group."
+    DOCKER_GROUP_CHANGED=true
+fi
 
 # Detect system architecture
 ARCH=$(uname -m)
@@ -172,6 +198,19 @@ if kind get clusters 2>/dev/null | grep -q "^${CLUSTER_NAME}$"; then
         kind delete cluster --name "${CLUSTER_NAME}"
     else
         echo_info "Keeping existing cluster. Skipping cluster creation."
+        
+        # Still configure kubectl for non-root user
+        echo_info "Configuring kubectl for user '$ACTUAL_USER'..."
+        USER_KUBE_DIR="${ACTUAL_USER_HOME}/.kube"
+        if [[ ! -d "$USER_KUBE_DIR" ]]; then
+            mkdir -p "$USER_KUBE_DIR"
+        fi
+        if [[ -f /root/.kube/config ]]; then
+            cp /root/.kube/config "$USER_KUBE_DIR/config"
+            chown -R "$ACTUAL_USER":"$ACTUAL_USER" "$USER_KUBE_DIR"
+            chmod 600 "$USER_KUBE_DIR/config"
+        fi
+        
         echo ""
         echo_info "==========================================="
         echo_info "Setup Complete!"
@@ -179,6 +218,14 @@ if kind get clusters 2>/dev/null | grep -q "^${CLUSTER_NAME}$"; then
         echo ""
         echo_info "Existing cluster details:"
         kubectl cluster-info --context "kind-${CLUSTER_NAME}" 2>/dev/null || true
+        echo ""
+        echo -e "${GREEN}You can now use kubectl and kind without sudo!${NC}"
+        
+        if [[ "$DOCKER_GROUP_CHANGED" == "true" ]]; then
+            echo ""
+            echo -e "${YELLOW}Note: Log out and back in (or run 'newgrp docker') for docker group to take effect.${NC}"
+        fi
+        echo ""
         exit 0
     fi
 fi
@@ -224,6 +271,29 @@ kind create cluster --config /tmp/kind-config.yaml --wait 5m
 # Cleanup config file
 rm -f /tmp/kind-config.yaml
 
+#######################################################################
+# STEP 4: Configure kubectl for non-root user
+#######################################################################
+echo_step "Configuring kubectl for user '$ACTUAL_USER'"
+
+# Create .kube directory for the user if it doesn't exist
+USER_KUBE_DIR="${ACTUAL_USER_HOME}/.kube"
+if [[ ! -d "$USER_KUBE_DIR" ]]; then
+    echo_info "Creating $USER_KUBE_DIR directory..."
+    mkdir -p "$USER_KUBE_DIR"
+fi
+
+# Copy the kubeconfig to user's .kube directory
+echo_info "Copying kubeconfig to $USER_KUBE_DIR/config..."
+cp /root/.kube/config "$USER_KUBE_DIR/config"
+
+# Set proper ownership for the user
+echo_info "Setting ownership for user '$ACTUAL_USER'..."
+chown -R "$ACTUAL_USER":"$ACTUAL_USER" "$USER_KUBE_DIR"
+chmod 600 "$USER_KUBE_DIR/config"
+
+echo_info "kubectl configured for user '$ACTUAL_USER' - no sudo required!"
+
 # Verify cluster is running
 echo_info "Verifying cluster status..."
 kubectl cluster-info --context "kind-${CLUSTER_NAME}"
@@ -260,5 +330,24 @@ echo "  kind get clusters              # List kind clusters"
 echo "  kind delete cluster --name ${CLUSTER_NAME}  # Delete cluster"
 echo ""
 echo -e "${YELLOW}Note:${NC} Port 80 and 443 are mapped for ingress controller use."
+echo ""
+
+# Check if docker group was changed and inform user
+if [[ "$DOCKER_GROUP_CHANGED" == "true" ]]; then
+    echo -e "${YELLOW}==========================================="
+    echo "  IMPORTANT: Docker Group Changed"
+    echo "===========================================${NC}"
+    echo ""
+    echo -e "${YELLOW}You were added to the 'docker' group.${NC}"
+    echo "To use docker/kind without sudo, either:"
+    echo ""
+    echo "  Option 1: Log out and log back in"
+    echo ""
+    echo "  Option 2: Run this command in your terminal:"
+    echo "            newgrp docker"
+    echo ""
+fi
+
+echo -e "${GREEN}You can now use kubectl and kind without sudo!${NC}"
 echo ""
 
