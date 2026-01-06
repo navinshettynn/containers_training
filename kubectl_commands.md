@@ -739,43 +739,145 @@ The `top` command shows resource usage (requires metrics-server).
 kubectl top nodes
 ```
 
-If this fails with an error about metrics, you need to install metrics-server:
+If this fails with an error like `error: Metrics API not available`, you need to install metrics-server.
+
+### Installing Metrics Server for KIND Clusters
+
+KIND clusters require a modified metrics-server configuration because the kubelet uses self-signed certificates. Follow these steps:
+
+**Step 1: Ensure no previous metrics-server exists**
+
+```bash
+# Check if metrics-server is already installed
+kubectl get deployment metrics-server -n kube-system 2>/dev/null && echo "Metrics server exists - cleaning up first"
+
+# If it exists, delete it completely
+kubectl delete -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml 2>/dev/null || true
+
+# Force delete any remaining pods
+kubectl delete pods -n kube-system -l k8s-app=metrics-server --force --grace-period=0 2>/dev/null || true
+
+# Verify clean state
+kubectl get all -n kube-system | grep metrics
+```
+
+**Step 2: Install metrics-server**
 
 ```bash
 kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
 ```
 
-**Note for KIND**: Metrics server needs additional configuration for KIND clusters. Create a patched version:
+**Step 3: Patch for KIND compatibility**
+
+Add the `--kubelet-insecure-tls` argument to skip certificate verification:
 
 ```bash
-cat > ~/k8s-lab/metrics-server-patch.yaml <<'EOF'
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: metrics-server
-  namespace: kube-system
-spec:
-  template:
-    spec:
-      containers:
-      - name: metrics-server
-        args:
-        - --cert-dir=/tmp
-        - --secure-port=10250
-        - --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname
-        - --kubelet-use-node-status-addresses
-        - --metric-resolution=15s
-        - --kubelet-insecure-tls
-EOF
-
-kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
-kubectl patch deployment metrics-server -n kube-system --patch-file ~/k8s-lab/metrics-server-patch.yaml
+kubectl patch deployment metrics-server -n kube-system --type='json' \
+  -p='[{"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--kubelet-insecure-tls"}]'
 ```
 
-Wait for metrics server to be ready (1-2 minutes):
+**Step 4: Wait for rollout to complete**
 
 ```bash
-kubectl get deployment metrics-server -n kube-system --watch
+kubectl rollout status deployment/metrics-server -n kube-system
+```
+
+**Step 5: Verify the pod is running**
+
+```bash
+kubectl get pods -n kube-system -l k8s-app=metrics-server
+```
+
+You should see `1/1 Running`.
+
+**Step 6: Wait for metrics collection and test**
+
+Metrics-server needs 30-60 seconds to collect data:
+
+```bash
+sleep 60
+kubectl top nodes
+```
+
+### Quick Installation (Single Command Block)
+
+Copy and paste this entire block for a clean installation:
+
+```bash
+# Clean any existing installation
+kubectl delete -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml 2>/dev/null || true
+kubectl delete pods -n kube-system -l k8s-app=metrics-server --force --grace-period=0 2>/dev/null || true
+sleep 5
+
+# Install and patch
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+kubectl patch deployment metrics-server -n kube-system --type='json' \
+  -p='[{"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--kubelet-insecure-tls"}]'
+
+# Wait for rollout
+kubectl rollout status deployment/metrics-server -n kube-system
+
+# Verify
+kubectl get pods -n kube-system -l k8s-app=metrics-server
+
+# Wait and test
+echo "Waiting 60 seconds for metrics collection..."
+sleep 60
+kubectl top nodes
+```
+
+### Troubleshooting Metrics Server
+
+If `kubectl top nodes` still doesn't work:
+
+```bash
+# Check if metrics-server pod is running
+kubectl get pods -n kube-system -l k8s-app=metrics-server
+
+# Check metrics-server logs for errors
+kubectl logs -n kube-system deployment/metrics-server
+
+# Check if the APIService is available
+kubectl get apiservice v1beta1.metrics.k8s.io
+```
+
+Common issues:
+
+| Issue | Symptom | Solution |
+|-------|---------|----------|
+| Pod not ready | `0/1 Ready` for 1-2 minutes | Wait for metrics collection |
+| Certificate errors | `x509: cannot validate certificate` in logs | `--kubelet-insecure-tls` flag missing |
+| Unknown flag panic | `panic: unknown flag` in logs | Delete completely and reinstall |
+| Readiness probe failed | `HTTP probe failed with statuscode: 500` | `--kubelet-insecure-tls` flag missing |
+| Rollout stuck | Old replicas pending termination | Force delete pods (see below) |
+
+### Fixing a Stuck or Broken Installation
+
+If metrics-server is stuck, in CrashLoopBackOff, or showing errors:
+
+```bash
+# Force delete all metrics-server resources
+kubectl delete pods -n kube-system -l k8s-app=metrics-server --force --grace-period=0
+kubectl delete replicaset -n kube-system -l k8s-app=metrics-server
+kubectl delete deployment metrics-server -n kube-system --force --grace-period=0
+
+# Wait for cleanup
+sleep 5
+
+# Verify clean
+kubectl get all -n kube-system | grep metrics
+
+# Reinstall fresh
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+kubectl patch deployment metrics-server -n kube-system --type='json' \
+  -p='[{"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--kubelet-insecure-tls"}]'
+
+# Wait for rollout
+kubectl rollout status deployment/metrics-server -n kube-system
+
+# Test after 60 seconds
+sleep 60
+kubectl top nodes
 ```
 
 ### View Node Resource Usage
