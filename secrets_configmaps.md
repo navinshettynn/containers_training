@@ -1092,316 +1092,1112 @@ kubectl delete secret app-secret
 
 ---
 
-## Exercises
+## Scenario-Based Exercises: Deploying "ShopFast" E-Commerce Platform
 
-### Exercise 1: Application Configuration
+You've just joined **TechRetail Inc.** as a DevOps engineer. The company is migrating their e-commerce platform "ShopFast" to Kubernetes. Your task is to properly configure the application using ConfigMaps and Secrets following security best practices.
 
-Create a complete application setup with ConfigMap for configuration:
+> **Story Context**: ShopFast consists of a web frontend, an API backend, and connects to a PostgreSQL database. The previous team hardcoded all configurations in Docker images, causing security issues and deployment headaches. Your job is to fix this!
 
 ```bash
+# Setup: Create your workspace
 cd ~/secrets-configmaps-lab
+```
 
-cat > exercise1.yaml <<'EOF'
+---
+
+### Exercise 1: The Hardcoded Disaster (Understanding the Problem)
+
+**Scenario**: Your first day on the job, and there's already a production incident! The previous developer accidentally pushed the Docker image with development database credentials to production. Customers are seeing test data!
+
+**Your Task**: First, let's see what the problematic "hardcoded" approach looks like, then fix it.
+
+#### Step 1: Deploy the "Bad" Version (Hardcoded Config)
+
+```bash
+cat > shopfast-bad.yaml <<'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: shopfast-bad
+  labels:
+    app: shopfast
+    version: bad
+spec:
+  containers:
+  - name: api
+    image: busybox:latest
+    command:
+    - sh
+    - -c
+    - |
+      echo "=== ShopFast API Starting ==="
+      echo "WARNING: All config is HARDCODED in the image!"
+      echo ""
+      echo "Database Host: dev-db.internal.local"
+      echo "Database User: dev_user"
+      echo "Database Pass: dev_password_123"
+      echo "Environment: development"
+      echo "Debug Mode: enabled"
+      echo ""
+      echo "Serving customers with DEV settings... OOPS!"
+      sleep 3600
+  restartPolicy: Never
+EOF
+
+kubectl apply -f shopfast-bad.yaml
+```
+
+#### Step 2: Observe the Problem
+
+```bash
+# Wait for pod to start
+kubectl wait --for=condition=Ready pod/shopfast-bad --timeout=30s
+
+# Check the logs - see the hardcoded dev credentials!
+kubectl logs shopfast-bad
+```
+
+**🔍 What You Should See**: The application is exposing development credentials. In a real scenario, this would connect to the wrong database!
+
+#### Step 3: Understand Why This is Bad
+
+```bash
+# Anyone with kubectl access can see these credentials
+kubectl get pod shopfast-bad -o yaml | grep -A 20 "command:"
+
+# Even worse - these are baked into the image history
+echo "In real Docker images, 'docker history' would reveal secrets in build layers!"
+```
+
+**📝 Key Learning**: Hardcoding configuration means:
+- ❌ Rebuilding images for every environment
+- ❌ Secrets exposed in image layers
+- ❌ Same image cannot be used in dev/staging/prod
+- ❌ Security audit nightmare
+
+#### Step 4: Clean Up the Bad Deployment
+
+```bash
+kubectl delete pod shopfast-bad
+rm shopfast-bad.yaml
+echo "✓ Bad deployment removed. Let's do this properly!"
+```
+
+---
+
+### Exercise 2: Separating Configuration from Code (ConfigMaps)
+
+**Scenario**: The CTO mandates: "No more hardcoded configs!" You need to externalize the ShopFast application settings so the same container image works in any environment.
+
+**Your Task**: Create a ConfigMap for non-sensitive settings and deploy ShopFast properly.
+
+#### Step 1: Create the Application ConfigMap
+
+```bash
+cat > shopfast-config.yaml <<'EOF'
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: webapp-settings
+  name: shopfast-config
+  labels:
+    app: shopfast
+    component: config
 data:
-  APP_NAME: "My Web App"
-  APP_PORT: "8080"
+  # Application Settings
+  APP_NAME: "ShopFast"
+  APP_VERSION: "2.1.0"
+  
+  # Environment Settings
+  ENVIRONMENT: "production"
+  DEBUG_MODE: "false"
+  LOG_LEVEL: "info"
+  
+  # Feature Flags
+  FEATURE_NEW_CHECKOUT: "true"
   FEATURE_DARK_MODE: "true"
+  FEATURE_AI_RECOMMENDATIONS: "false"
+  
+  # External Service URLs (non-sensitive)
+  PAYMENT_GATEWAY_URL: "https://payments.shopfast.com/api"
+  SHIPPING_API_URL: "https://shipping.shopfast.com/api"
+  CDN_URL: "https://cdn.shopfast.com"
+EOF
+
+kubectl apply -f shopfast-config.yaml
+```
+
+#### Step 2: Verify the ConfigMap was Created
+
+```bash
+# List all ConfigMaps
+kubectl get configmaps
+
+# View the ConfigMap details
+kubectl describe configmap shopfast-config
+
+# See the actual data
+kubectl get configmap shopfast-config -o yaml
+```
+
+**🔍 What You Should See**: All your configuration data stored as key-value pairs, visible but separate from any container.
+
+#### Step 3: Deploy ShopFast Using the ConfigMap
+
+```bash
+cat > shopfast-app.yaml <<'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: shopfast-api
+  labels:
+    app: shopfast
+    component: api
+spec:
+  containers:
+  - name: api
+    image: busybox:latest
+    command:
+    - sh
+    - -c
+    - |
+      echo "╔════════════════════════════════════════════╗"
+      echo "║     ShopFast API - Production Server       ║"
+      echo "╚════════════════════════════════════════════╝"
+      echo ""
+      echo "📦 Application: $APP_NAME v$APP_VERSION"
+      echo "🌍 Environment: $ENVIRONMENT"
+      echo "🐛 Debug Mode:  $DEBUG_MODE"
+      echo "📊 Log Level:   $LOG_LEVEL"
+      echo ""
+      echo "🚀 Feature Flags:"
+      echo "   • New Checkout: $FEATURE_NEW_CHECKOUT"
+      echo "   • Dark Mode:    $FEATURE_DARK_MODE"
+      echo "   • AI Recommend: $FEATURE_AI_RECOMMENDATIONS"
+      echo ""
+      echo "🔗 External Services:"
+      echo "   • Payments: $PAYMENT_GATEWAY_URL"
+      echo "   • Shipping: $SHIPPING_API_URL"
+      echo "   • CDN:      $CDN_URL"
+      echo ""
+      echo "✅ Configuration loaded from ConfigMap!"
+      echo "Server running... (Ctrl+C to stop)"
+      sleep 3600
+    envFrom:
+    - configMapRef:
+        name: shopfast-config
+  restartPolicy: Never
+EOF
+
+kubectl apply -f shopfast-app.yaml
+```
+
+#### Step 4: Verify Configuration is Loaded Correctly
+
+```bash
+# Wait for the pod
+kubectl wait --for=condition=Ready pod/shopfast-api --timeout=30s
+
+# Check the application output
+kubectl logs shopfast-api
+```
+
+**🔍 What You Should See**: The application displays all configuration values loaded from the ConfigMap - NOT hardcoded!
+
+#### Step 5: Verify Environment Variables Inside the Container
+
+```bash
+# Exec into the container and check env vars
+kubectl exec shopfast-api -- env | grep -E "APP_|ENVIRONMENT|DEBUG|LOG_|FEATURE_|URL" | sort
+```
+
+**📝 Key Learning**: 
+- ✅ Configuration is external to the image
+- ✅ Same image can run anywhere
+- ✅ Easy to update without rebuilding
+- ✅ Configuration is auditable via kubectl
+
+---
+
+### Exercise 3: Securing Sensitive Data (Secrets)
+
+**Scenario**: Great progress! But the security team flags an issue: "Database credentials and API keys should NEVER be in ConfigMaps - they're stored in plain text!" You need to use Kubernetes Secrets for sensitive data.
+
+**Your Task**: Create Secrets for database credentials and API keys, then update ShopFast to use them.
+
+#### Step 1: Understand Why Secrets Matter
+
+```bash
+# ConfigMap data is stored in plain text in etcd
+# Anyone with API access can read it
+kubectl get configmap shopfast-config -o jsonpath='{.data}' | head -c 200
+echo "..."
+echo ""
+echo "⚠️  This is fine for non-sensitive data, but NOT for passwords!"
+```
+
+#### Step 2: Create Database Credentials Secret
+
+```bash
+cat > shopfast-db-secret.yaml <<'EOF'
+apiVersion: v1
+kind: Secret
+metadata:
+  name: shopfast-db-credentials
+  labels:
+    app: shopfast
+    component: database
+type: Opaque
+stringData:
+  # Using stringData for convenience (auto-encodes to base64)
+  DB_HOST: "prod-db.shopfast.internal"
+  DB_PORT: "5432"
+  DB_NAME: "shopfast_production"
+  DB_USER: "shopfast_app"
+  DB_PASSWORD: "Pr0d$ecureP@ss#2024!"
+EOF
+
+kubectl apply -f shopfast-db-secret.yaml
+```
+
+#### Step 3: Create API Keys Secret
+
+```bash
+cat > shopfast-api-keys.yaml <<'EOF'
+apiVersion: v1
+kind: Secret
+metadata:
+  name: shopfast-api-keys
+  labels:
+    app: shopfast
+    component: integrations
+type: Opaque
+stringData:
+  STRIPE_SECRET_KEY: "sk_live_51ABC123XYZ789..."
+  SENDGRID_API_KEY: "SG.abcdef123456..."
+  AWS_ACCESS_KEY_ID: "AKIAIOSFODNN7EXAMPLE"
+  AWS_SECRET_ACCESS_KEY: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLE"
+EOF
+
+kubectl apply -f shopfast-api-keys.yaml
+```
+
+#### Step 4: Verify Secrets are Protected
+
+```bash
+# List secrets
+kubectl get secrets | grep shopfast
+
+# Describe shows metadata but NOT the values!
+kubectl describe secret shopfast-db-credentials
+echo ""
+echo "👆 Notice: Values are NOT displayed with 'describe'!"
+```
+
+#### Step 5: Understand Base64 Encoding (Not Encryption!)
+
+```bash
+# View the raw secret - data is base64 encoded
+kubectl get secret shopfast-db-credentials -o yaml
+
+echo ""
+echo "⚠️  IMPORTANT: Base64 is ENCODING, not ENCRYPTION!"
+echo "Anyone with kubectl access can decode it:"
+echo ""
+
+# Decode the password (demonstrating the security limitation)
+kubectl get secret shopfast-db-credentials -o jsonpath='{.data.DB_PASSWORD}' | base64 --decode
+echo ""
+```
+
+**📝 Key Learning**: Base64 encoding is **NOT** security. It's just encoding for safe storage. Real security comes from RBAC, encryption at rest, and external secret managers.
+
+#### Step 6: Deploy ShopFast with Both ConfigMap and Secrets
+
+```bash
+cat > shopfast-secure.yaml <<'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: shopfast-secure
+  labels:
+    app: shopfast
+    component: api
+    version: secure
+spec:
+  containers:
+  - name: api
+    image: busybox:latest
+    command:
+    - sh
+    - -c
+    - |
+      echo "╔════════════════════════════════════════════╗"
+      echo "║   ShopFast API - Secure Configuration      ║"
+      echo "╚════════════════════════════════════════════╝"
+      echo ""
+      echo "📦 App: $APP_NAME v$APP_VERSION ($ENVIRONMENT)"
+      echo ""
+      echo "🔐 Database Connection (from Secret):"
+      echo "   Host: $DB_HOST"
+      echo "   Port: $DB_PORT"
+      echo "   Name: $DB_NAME"
+      echo "   User: $DB_USER"
+      echo "   Pass: ******* (hidden for security)"
+      echo ""
+      echo "🔑 API Keys Loaded (from Secret):"
+      echo "   Stripe:    ${STRIPE_SECRET_KEY:0:10}... ✓"
+      echo "   SendGrid:  ${SENDGRID_API_KEY:0:5}... ✓"
+      echo "   AWS Key:   ${AWS_ACCESS_KEY_ID:0:8}... ✓"
+      echo ""
+      echo "✅ Secure configuration loaded!"
+      echo "✅ Sensitive data from Secrets"
+      echo "✅ Non-sensitive data from ConfigMap"
+      sleep 3600
+    envFrom:
+    # Non-sensitive configuration
+    - configMapRef:
+        name: shopfast-config
+    # Sensitive database credentials
+    - secretRef:
+        name: shopfast-db-credentials
+    # Sensitive API keys
+    - secretRef:
+        name: shopfast-api-keys
+  restartPolicy: Never
+EOF
+
+kubectl apply -f shopfast-secure.yaml
+kubectl wait --for=condition=Ready pod/shopfast-secure --timeout=30s
+kubectl logs shopfast-secure
+```
+
+**🔍 What You Should See**: The application loads configuration from ConfigMap AND secrets. Sensitive values are masked in output!
+
+#### Step 7: Clean Up This Exercise
+
+```bash
+kubectl delete pod shopfast-api shopfast-secure
+echo "✓ Pods cleaned up. ConfigMap and Secrets retained for next exercise."
+```
+
+---
+
+### Exercise 4: Configuration Files via Volume Mounts
+
+**Scenario**: The ShopFast application also needs configuration files (not just environment variables). The operations team wants to provide an `nginx.conf` for the web frontend and a `logging.json` for structured logging configuration.
+
+**Your Task**: Mount ConfigMaps and Secrets as files in the container filesystem.
+
+#### Step 1: Create ConfigMap with Configuration Files
+
+```bash
+cat > shopfast-files-config.yaml <<'EOF'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shopfast-files
+  labels:
+    app: shopfast
+    component: config-files
+data:
   nginx.conf: |
     events {
         worker_connections 1024;
     }
     http {
+        # Logging format for ShopFast
+        log_format shopfast '$remote_addr - $request_id [$time_local] '
+                            '"$request" $status $body_bytes_sent '
+                            '"$http_referer" "$http_user_agent"';
+        
         server {
-            listen 8080;
+            listen 80;
+            server_name shopfast.com;
+            
+            # Health check endpoint
+            location /health {
+                return 200 '{"status": "healthy", "service": "shopfast-web"}';
+                add_header Content-Type application/json;
+            }
+            
+            # Main application
             location / {
-                return 200 'Welcome to $APP_NAME\nDark Mode: $FEATURE_DARK_MODE\n';
-                add_header Content-Type text/plain;
+                proxy_pass http://localhost:3000;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
             }
         }
     }
----
-apiVersion: v1
-kind: Pod
-metadata:
-  name: webapp
-spec:
-  containers:
-  - name: nginx
-    image: nginx:alpine
-    ports:
-    - containerPort: 8080
-    envFrom:
-    - configMapRef:
-        name: webapp-settings
-    volumeMounts:
-    - name: nginx-config
-      mountPath: /etc/nginx/nginx.conf
-      subPath: nginx.conf
-  volumes:
-  - name: nginx-config
-    configMap:
-      name: webapp-settings
+  
+  logging.json: |
+    {
+      "version": 1,
+      "appName": "shopfast",
+      "outputs": [
+        {
+          "type": "stdout",
+          "format": "json"
+        },
+        {
+          "type": "file",
+          "path": "/var/log/shopfast/app.log",
+          "maxSize": "100MB",
+          "maxBackups": 5
+        }
+      ],
+      "levels": {
+        "default": "info",
+        "database": "warn",
+        "http": "debug"
+      }
+    }
+  
+  features.yaml: |
+    features:
+      new_checkout:
+        enabled: true
+        rollout_percentage: 100
+      dark_mode:
+        enabled: true
+        default: false
+      ai_recommendations:
+        enabled: false
+        model_version: "v2.1"
 EOF
 
-kubectl apply -f exercise1.yaml
-kubectl wait --for=condition=Ready pod/webapp --timeout=60s
-
-# Test
-kubectl port-forward webapp 8080:8080 &
-sleep 2
-curl localhost:8080
-pkill -f "port-forward webapp"
+kubectl apply -f shopfast-files-config.yaml
 ```
 
-Cleanup:
+#### Step 2: Create Secret with Sensitive Files
 
 ```bash
-kubectl delete -f exercise1.yaml
-```
-
-### Exercise 2: Database Credentials with Secrets
-
-Create a secure database configuration:
-
-```bash
-cat > exercise2.yaml <<'EOF'
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: db-config
-data:
-  DB_HOST: "postgres.database.svc"
-  DB_PORT: "5432"
-  DB_NAME: "myapp"
----
+cat > shopfast-files-secret.yaml <<'EOF'
 apiVersion: v1
 kind: Secret
 metadata:
-  name: db-credentials
+  name: shopfast-certs
+  labels:
+    app: shopfast
+    component: certificates
 type: Opaque
 stringData:
-  DB_USER: "appuser"
-  DB_PASSWORD: "P@ssw0rd123!"
----
+  # In real scenarios, these would be actual certificate contents
+  tls.crt: |
+    -----BEGIN CERTIFICATE-----
+    MIIDXTCCAkWgAwIBAgIJAJC1HiIAZAiUMA0Gcg...
+    (Production TLS Certificate for shopfast.com)
+    -----END CERTIFICATE-----
+  
+  tls.key: |
+    -----BEGIN PRIVATE KEY-----
+    MIIEvgIBADANBgkqhkiG9w0BAQEFAASC...
+    (Private Key - KEEP SECURE!)
+    -----END PRIVATE KEY-----
+  
+  db-ca.crt: |
+    -----BEGIN CERTIFICATE-----
+    MIIDBjCCAe6gAwIBAgIBATANBgkqhk...
+    (Database CA Certificate for SSL connections)
+    -----END CERTIFICATE-----
+EOF
+
+kubectl apply -f shopfast-files-secret.yaml
+```
+
+#### Step 3: Deploy with Volume Mounts
+
+```bash
+cat > shopfast-with-files.yaml <<'EOF'
 apiVersion: v1
 kind: Pod
 metadata:
-  name: db-client
+  name: shopfast-web
+  labels:
+    app: shopfast
+    component: web
 spec:
   containers:
-  - name: app
+  - name: web
     image: busybox:latest
-    command: 
+    command:
     - sh
     - -c
     - |
-      echo "Database Connection Info:"
-      echo "Host: $DB_HOST"
-      echo "Port: $DB_PORT"
-      echo "Database: $DB_NAME"
-      echo "User: $DB_USER"
-      echo "Password: [HIDDEN]"
+      echo "╔════════════════════════════════════════════╗"
+      echo "║   ShopFast Web - Configuration Files       ║"
+      echo "╚════════════════════════════════════════════╝"
+      echo ""
+      
+      echo "📁 Configuration Files Mounted:"
+      echo ""
+      
+      echo "━━━ /etc/nginx/nginx.conf ━━━"
+      head -15 /etc/nginx/nginx.conf
+      echo "... (truncated)"
+      echo ""
+      
+      echo "━━━ /config/logging.json ━━━"
+      cat /config/logging.json | head -10
+      echo "... (truncated)"
+      echo ""
+      
+      echo "━━━ /config/features.yaml ━━━"
+      cat /config/features.yaml
+      echo ""
+      
+      echo "🔐 Certificate Files (with secure permissions):"
+      ls -la /certs/
+      echo ""
+      
+      echo "📋 Certificate Details:"
+      echo "   TLS Cert: $(wc -c < /certs/tls.crt) bytes"
+      echo "   TLS Key:  $(wc -c < /certs/tls.key) bytes (PROTECTED)"
+      echo "   DB CA:    $(wc -c < /certs/db-ca.crt) bytes"
+      echo ""
+      
+      echo "✅ All configuration files mounted successfully!"
       sleep 3600
-    envFrom:
-    - configMapRef:
-        name: db-config
-    - secretRef:
-        name: db-credentials
-  restartPolicy: Never
-EOF
-
-kubectl apply -f exercise2.yaml
-sleep 5
-kubectl logs db-client
-```
-
-Cleanup:
-
-```bash
-kubectl delete -f exercise2.yaml
-```
-
-### Exercise 3: TLS Certificate Configuration
-
-Create a Pod with TLS certificates mounted:
-
-```bash
-# Generate self-signed certificate
-openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-  -keyout tls.key -out tls.crt \
-  -subj "/CN=myapp.example.com"
-
-# Create the Secret
-kubectl create secret tls myapp-tls --cert=tls.crt --key=tls.key
-
-# Create Pod that uses the certificate
-cat > exercise3.yaml <<'EOF'
-apiVersion: v1
-kind: Pod
-metadata:
-  name: tls-demo
-spec:
-  containers:
-  - name: app
-    image: busybox:latest
-    command: ["sh", "-c", "ls -la /certs && openssl x509 -in /certs/tls.crt -text -noout | head -20 && sleep 3600"]
     volumeMounts:
-    - name: tls-certs
+    # Mount nginx.conf to specific path using subPath
+    - name: config-files
+      mountPath: /etc/nginx/nginx.conf
+      subPath: nginx.conf
+    # Mount other config files to /config directory
+    - name: config-files
+      mountPath: /config
+    # Mount certificates with restricted permissions
+    - name: certs
       mountPath: /certs
       readOnly: true
   volumes:
-  - name: tls-certs
+  - name: config-files
+    configMap:
+      name: shopfast-files
+  - name: certs
     secret:
-      secretName: myapp-tls
+      secretName: shopfast-certs
+      defaultMode: 0400  # Read-only for owner only!
 EOF
 
-kubectl apply -f exercise3.yaml
-sleep 5
-kubectl logs tls-demo
-
-# Cleanup cert files
-rm tls.key tls.crt
+kubectl apply -f shopfast-with-files.yaml
+kubectl wait --for=condition=Ready pod/shopfast-web --timeout=30s
+kubectl logs shopfast-web
 ```
 
-Cleanup:
+#### Step 4: Verify File Permissions for Secrets
 
 ```bash
-kubectl delete -f exercise3.yaml
-kubectl delete secret myapp-tls
+echo "🔐 Verifying secure file permissions on certificates:"
+echo ""
+kubectl exec shopfast-web -- ls -la /certs/
+echo ""
+echo "👆 Notice: Permissions are 0400 (read-only, owner only)"
+echo "   This prevents other processes from reading sensitive keys!"
 ```
+
+#### Step 5: Compare with ConfigMap Permissions
+
+```bash
+echo "📁 ConfigMap files have standard permissions:"
+kubectl exec shopfast-web -- ls -la /config/
+echo ""
+echo "👆 Notice: ConfigMap files are world-readable (0644)"
+echo "   This is fine for non-sensitive configuration!"
+```
+
+**📝 Key Learning**:
+- ✅ ConfigMaps and Secrets can be mounted as files
+- ✅ Use `subPath` to mount individual files without replacing directories
+- ✅ Use `defaultMode` to set secure permissions on sensitive files
+- ✅ Secrets mounted as volumes are stored in tmpfs (memory), not disk
 
 ---
 
-## Optional Advanced Exercises
+### Exercise 5: Live Configuration Updates (The Marketing Emergency)
 
-### Exercise 4: Hot-Reload Configuration
+**Scenario**: It's Black Friday! Marketing just announced a flash sale, but they forgot to tell engineering. You need to IMMEDIATELY enable a new "FLASH_SALE" feature flag and update the discount percentage - WITHOUT redeploying the application!
 
-Create a deployment that automatically picks up ConfigMap changes:
+**Your Task**: Update a ConfigMap and observe how changes propagate to running Pods.
+
+#### Step 1: Deploy the ShopFast Promotions Service
 
 ```bash
-cat > exercise4.yaml <<'EOF'
+cat > shopfast-promos-config.yaml <<'EOF'
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: hot-reload-config
+  name: shopfast-promos
+  labels:
+    app: shopfast
+    component: promotions
 data:
-  message.txt: "Hello, World! Version 1"
----
+  FLASH_SALE_ENABLED: "false"
+  FLASH_SALE_DISCOUNT: "0"
+  FLASH_SALE_MESSAGE: "No active sales"
+  promotions.conf: |
+    # ShopFast Promotions Configuration
+    # Last updated: Before Black Friday
+    
+    flash_sale {
+        enabled = false
+        discount_percent = 0
+        banner_message = "No active promotions"
+        end_time = ""
+    }
+EOF
+
+kubectl apply -f shopfast-promos-config.yaml
+```
+
+```bash
+cat > shopfast-promos-app.yaml <<'EOF'
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: hot-reload-demo
+  name: shopfast-promos
+  labels:
+    app: shopfast
+    component: promotions
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: hot-reload
+      app: shopfast-promos
   template:
     metadata:
       labels:
-        app: hot-reload
+        app: shopfast-promos
     spec:
       containers:
-      - name: app
+      - name: promos
         image: busybox:latest
-        command: ["sh", "-c", "while true; do cat /config/message.txt; sleep 5; done"]
+        command:
+        - sh
+        - -c
+        - |
+          echo "🛍️  ShopFast Promotions Service Started"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          COUNTER=0
+          while true; do
+            COUNTER=$((COUNTER + 1))
+            echo ""
+            echo "═══════════════════════════════════════"
+            echo "📊 Status Check #$COUNTER ($(date +%H:%M:%S))"
+            echo "═══════════════════════════════════════"
+            echo ""
+            echo "📢 ENV VARIABLES (set at pod start):"
+            echo "   Flash Sale Enabled:  $FLASH_SALE_ENABLED"
+            echo "   Discount:            $FLASH_SALE_DISCOUNT%"
+            echo "   Message:             $FLASH_SALE_MESSAGE"
+            echo ""
+            echo "📁 CONFIG FILE (live from volume):"
+            grep -E "enabled|discount_percent|banner_message" /config/promotions.conf
+            echo ""
+            sleep 15
+          done
+        env:
+        - name: FLASH_SALE_ENABLED
+          valueFrom:
+            configMapKeyRef:
+              name: shopfast-promos
+              key: FLASH_SALE_ENABLED
+        - name: FLASH_SALE_DISCOUNT
+          valueFrom:
+            configMapKeyRef:
+              name: shopfast-promos
+              key: FLASH_SALE_DISCOUNT
+        - name: FLASH_SALE_MESSAGE
+          valueFrom:
+            configMapKeyRef:
+              name: shopfast-promos
+              key: FLASH_SALE_MESSAGE
         volumeMounts:
         - name: config
           mountPath: /config
       volumes:
       - name: config
         configMap:
-          name: hot-reload-config
+          name: shopfast-promos
 EOF
 
-kubectl apply -f exercise4.yaml
-kubectl rollout status deployment hot-reload-demo
-
-# Watch logs
-kubectl logs -f -l app=hot-reload &
-
-# Update ConfigMap (in another terminal or wait a moment)
-sleep 10
-kubectl patch configmap hot-reload-config --type merge -p '{"data":{"message.txt":"Hello, World! Version 2 - Updated!"}}'
-
-# Wait for sync (up to 1 minute)
-sleep 60
-
-# Stop log streaming
-pkill -f "kubectl logs"
+kubectl apply -f shopfast-promos-app.yaml
+kubectl rollout status deployment shopfast-promos
 ```
 
-Cleanup:
+#### Step 2: Observe Current Configuration
 
 ```bash
-kubectl delete -f exercise4.yaml
+echo "📋 Current promotions status (before update):"
+echo ""
+kubectl logs -l app=shopfast-promos --tail=20
 ```
 
-### Exercise 5: Environment-Specific Configuration
+**🔍 What You Should See**: Flash sale is disabled, 0% discount.
 
-Create configurations for different environments:
+#### Step 3: 🚨 EMERGENCY! Enable Black Friday Sale!
 
 ```bash
-# Development ConfigMap
-cat > dev-config.yaml <<'EOF'
+echo ""
+echo "🚨🚨🚨 MARKETING EMERGENCY! 🚨🚨🚨"
+echo "Enable Black Friday Flash Sale NOW!"
+echo ""
+
+kubectl patch configmap shopfast-promos --type merge -p '{
+  "data": {
+    "FLASH_SALE_ENABLED": "true",
+    "FLASH_SALE_DISCOUNT": "50",
+    "FLASH_SALE_MESSAGE": "🔥 BLACK FRIDAY FLASH SALE - 50% OFF EVERYTHING! 🔥",
+    "promotions.conf": "# ShopFast Promotions Configuration\n# UPDATED: Black Friday Emergency!\n\nflash_sale {\n    enabled = true\n    discount_percent = 50\n    banner_message = \"BLACK FRIDAY FLASH SALE - 50% OFF!\"\n    end_time = \"2024-11-30T23:59:59Z\"\n}"
+  }
+}'
+
+echo "✅ ConfigMap updated!"
+```
+
+#### Step 4: Observe What Updates and What Doesn't
+
+```bash
+echo ""
+echo "⏳ Waiting 30 seconds for volume sync..."
+echo "   (Volume mounts update automatically, env vars do NOT)"
+echo ""
+sleep 30
+
+echo "📋 Checking promotions status AFTER ConfigMap update:"
+echo ""
+kubectl logs -l app=shopfast-promos --tail=25
+```
+
+**🔍 Critical Observation**: 
+- **CONFIG FILE**: Updated automatically! Shows the new Black Friday settings!
+- **ENV VARIABLES**: Still show old values! They were set when the Pod started!
+
+#### Step 5: Understanding the Update Behavior
+
+```bash
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "📚 KEY LEARNING: ConfigMap Update Propagation"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+echo "✅ VOLUME MOUNTS: Update automatically (~30-60 seconds)"
+echo "   → Great for config files that apps reload dynamically"
+echo ""
+echo "❌ ENVIRONMENT VARS: Do NOT update (Pod restart required)"
+echo "   → Env vars are set once when container starts"
+echo ""
+echo "💡 Best Practice: Use volume mounts for configs that"
+echo "   need live updates. Use env vars for startup configs."
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+```
+
+#### Step 6: Force Update Environment Variables (Pod Restart)
+
+```bash
+echo ""
+echo "🔄 Restarting deployment to pick up env var changes..."
+kubectl rollout restart deployment shopfast-promos
+kubectl rollout status deployment shopfast-promos
+
+echo ""
+echo "📋 Status after restart:"
+kubectl logs -l app=shopfast-promos --tail=20
+```
+
+**🔍 What You Should See**: NOW both environment variables AND config files show the Black Friday sale settings!
+
+**📝 Key Learning**:
+- Volume-mounted ConfigMaps update automatically (with delay)
+- Environment variables require Pod restart
+- Design your apps to reload config files for dynamic updates
+- Use `kubectl rollout restart` for env var updates
+
+---
+
+### Exercise 6: Multi-Environment Deployment (Dev vs Production)
+
+**Scenario**: ShopFast needs to run in both development and production environments. The same Docker image should work in both, with different configurations. This is the "build once, deploy anywhere" principle.
+
+**Your Task**: Create environment-specific ConfigMaps and Secrets, then demonstrate switching between them.
+
+#### Step 1: Create Development Configuration
+
+```bash
+cat > shopfast-dev.yaml <<'EOF'
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: app-config-dev
+  name: shopfast-config-dev
+  labels:
+    app: shopfast
+    environment: development
 data:
-  ENV: "development"
-  DEBUG: "true"
+  ENVIRONMENT: "development"
+  DEBUG_MODE: "true"
   LOG_LEVEL: "debug"
   API_URL: "http://localhost:8080"
+  DATABASE_SSL: "false"
+  CACHE_ENABLED: "false"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: shopfast-secrets-dev
+  labels:
+    app: shopfast
+    environment: development
+type: Opaque
+stringData:
+  DB_HOST: "localhost"
+  DB_PORT: "5432"
+  DB_NAME: "shopfast_dev"
+  DB_USER: "dev_user"
+  DB_PASSWORD: "dev_password"
+  API_KEY: "dev_key_not_for_production"
 EOF
 
-# Production ConfigMap
-cat > prod-config.yaml <<'EOF'
+kubectl apply -f shopfast-dev.yaml
+```
+
+#### Step 2: Create Production Configuration
+
+```bash
+cat > shopfast-prod.yaml <<'EOF'
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: app-config-prod
+  name: shopfast-config-prod
+  labels:
+    app: shopfast
+    environment: production
 data:
-  ENV: "production"
-  DEBUG: "false"
+  ENVIRONMENT: "production"
+  DEBUG_MODE: "false"
   LOG_LEVEL: "warn"
-  API_URL: "https://api.example.com"
+  API_URL: "https://api.shopfast.com"
+  DATABASE_SSL: "true"
+  CACHE_ENABLED: "true"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: shopfast-secrets-prod
+  labels:
+    app: shopfast
+    environment: production
+type: Opaque
+stringData:
+  DB_HOST: "prod-db.shopfast.internal"
+  DB_PORT: "5432"
+  DB_NAME: "shopfast_production"
+  DB_USER: "shopfast_prod"
+  DB_PASSWORD: "Sup3r$ecur3Pr0dP@ss!"
+  API_KEY: "prod_live_key_abc123xyz789"
 EOF
 
-kubectl apply -f dev-config.yaml
-kubectl apply -f prod-config.yaml
+kubectl apply -f shopfast-prod.yaml
+```
 
-# Create Pod using dev config
-cat > env-pod.yaml <<'EOF'
+#### Step 3: Create the Deployment Template
+
+```bash
+cat > shopfast-deployment.yaml <<'EOF'
 apiVersion: v1
 kind: Pod
 metadata:
-  name: env-app
+  name: shopfast-ENV_PLACEHOLDER
+  labels:
+    app: shopfast
+    environment: ENV_PLACEHOLDER
 spec:
   containers:
-  - name: app
+  - name: api
     image: busybox:latest
-    command: ["sh", "-c", "env | grep -E 'ENV|DEBUG|LOG|API' && sleep 3600"]
+    command:
+    - sh
+    - -c
+    - |
+      echo "╔════════════════════════════════════════════╗"
+      echo "║        ShopFast - Environment Check        ║"
+      echo "╚════════════════════════════════════════════╝"
+      echo ""
+      echo "🌍 Running in: $ENVIRONMENT"
+      echo ""
+      echo "📋 Configuration:"
+      echo "   Debug Mode:    $DEBUG_MODE"
+      echo "   Log Level:     $LOG_LEVEL"
+      echo "   API URL:       $API_URL"
+      echo "   Database SSL:  $DATABASE_SSL"
+      echo "   Cache:         $CACHE_ENABLED"
+      echo ""
+      echo "🔐 Database Connection:"
+      echo "   Host:     $DB_HOST"
+      echo "   Port:     $DB_PORT"
+      echo "   Database: $DB_NAME"
+      echo "   User:     $DB_USER"
+      echo "   Password: ******* (${#DB_PASSWORD} chars)"
+      echo ""
+      if [ "$ENVIRONMENT" = "production" ]; then
+        echo "⚠️  PRODUCTION MODE - Extra security enabled"
+        echo "   • Debug disabled"
+        echo "   • SSL required"
+        echo "   • Full logging"
+      else
+        echo "🔧 DEVELOPMENT MODE - Developer friendly"
+        echo "   • Debug enabled"
+        echo "   • Verbose logging"
+        echo "   • Local resources"
+      fi
+      echo ""
+      sleep 3600
     envFrom:
     - configMapRef:
-        name: app-config-dev  # Change to app-config-prod for production
+        name: shopfast-config-ENV_PLACEHOLDER
+    - secretRef:
+        name: shopfast-secrets-ENV_PLACEHOLDER
+  restartPolicy: Never
 EOF
-
-kubectl apply -f env-pod.yaml
-sleep 5
-kubectl logs env-app
 ```
 
-Cleanup:
+#### Step 4: Deploy to Development Environment
 
 ```bash
-kubectl delete pod env-app
-kubectl delete configmap app-config-dev app-config-prod
-rm dev-config.yaml prod-config.yaml env-pod.yaml
+# Create dev deployment from template
+sed 's/ENV_PLACEHOLDER/dev/g' shopfast-deployment.yaml > shopfast-dev-pod.yaml
+kubectl apply -f shopfast-dev-pod.yaml
+kubectl wait --for=condition=Ready pod/shopfast-dev --timeout=30s
+
+echo ""
+echo "🔧 DEVELOPMENT Environment:"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+kubectl logs shopfast-dev
+```
+
+#### Step 5: Deploy to Production Environment
+
+```bash
+# Create prod deployment from template
+sed 's/ENV_PLACEHOLDER/prod/g' shopfast-deployment.yaml > shopfast-prod-pod.yaml
+kubectl apply -f shopfast-prod-pod.yaml
+kubectl wait --for=condition=Ready pod/shopfast-prod --timeout=30s
+
+echo ""
+echo "🚀 PRODUCTION Environment:"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━"
+kubectl logs shopfast-prod
+```
+
+#### Step 6: Compare the Two Environments
+
+```bash
+echo ""
+echo "═══════════════════════════════════════════════════════"
+echo "📊 COMPARISON: Development vs Production"
+echo "═══════════════════════════════════════════════════════"
+echo ""
+echo "Development Settings:"
+kubectl exec shopfast-dev -- env | grep -E "ENVIRONMENT|DEBUG|LOG_LEVEL|DB_HOST" | sort
+echo ""
+echo "Production Settings:"
+kubectl exec shopfast-prod -- env | grep -E "ENVIRONMENT|DEBUG|LOG_LEVEL|DB_HOST" | sort
+echo ""
+echo "💡 KEY INSIGHT: Same container image, different configs!"
+echo "   This enables: dev → staging → production pipelines"
+echo "═══════════════════════════════════════════════════════"
+```
+
+**📝 Key Learning**:
+- ✅ One image, multiple environments
+- ✅ Environment-specific ConfigMaps and Secrets
+- ✅ No code changes between environments
+- ✅ Easy to promote configurations through pipeline
+
+---
+
+### Final Exercise: Complete Cleanup and Review
+
+**Scenario**: The ShopFast deployment exercises are complete. Time to clean up and review what you learned.
+
+#### Step 1: Review All Resources Created
+
+```bash
+echo "📋 ShopFast Resources Created During Lab:"
+echo ""
+echo "ConfigMaps:"
+kubectl get configmaps | grep shopfast
+echo ""
+echo "Secrets:"
+kubectl get secrets | grep shopfast
+echo ""
+echo "Pods:"
+kubectl get pods | grep shopfast
+echo ""
+echo "Deployments:"
+kubectl get deployments | grep shopfast
+```
+
+#### Step 2: Clean Up All ShopFast Resources
+
+```bash
+echo "🧹 Cleaning up all ShopFast resources..."
+echo ""
+
+# Delete Pods
+kubectl delete pod shopfast-web shopfast-dev shopfast-prod 2>/dev/null || true
+
+# Delete Deployments
+kubectl delete deployment shopfast-promos 2>/dev/null || true
+
+# Delete ConfigMaps
+kubectl delete configmap shopfast-config shopfast-files shopfast-promos \
+  shopfast-config-dev shopfast-config-prod 2>/dev/null || true
+
+# Delete Secrets  
+kubectl delete secret shopfast-db-credentials shopfast-api-keys shopfast-certs \
+  shopfast-secrets-dev shopfast-secrets-prod 2>/dev/null || true
+
+# Clean up YAML files
+rm -f shopfast-*.yaml
+
+echo "✅ Cleanup complete!"
+```
+
+#### Step 3: Lab Summary
+
+```bash
+echo ""
+echo "╔════════════════════════════════════════════════════════╗"
+echo "║          🎓 LAB COMPLETE - KEY TAKEAWAYS 🎓            ║"
+echo "╚════════════════════════════════════════════════════════╝"
+echo ""
+echo "✅ Exercise 1: Hardcoded configs are dangerous"
+echo "   → Separating config from code is essential"
+echo ""
+echo "✅ Exercise 2: ConfigMaps for non-sensitive data"
+echo "   → Environment variables via envFrom"
+echo "   → Centralized, auditable configuration"
+echo ""
+echo "✅ Exercise 3: Secrets for sensitive data"
+echo "   → Base64 encoded (NOT encrypted)"
+echo "   → Use stringData for convenience"
+echo "   → RBAC controls who can access"
+echo ""
+echo "✅ Exercise 4: Volume mounts for config files"
+echo "   → Use subPath for individual files"
+echo "   → Use defaultMode for secure permissions"
+echo "   → Secrets stored in tmpfs (memory)"
+echo ""
+echo "✅ Exercise 5: Live configuration updates"
+echo "   → Volume mounts: Auto-update (~1 min)"
+echo "   → Environment vars: Need Pod restart"
+echo ""
+echo "✅ Exercise 6: Multi-environment deployments"
+echo "   → Same image, different configs"
+echo "   → Build once, deploy anywhere"
+echo ""
+echo "🚀 You're now ready to manage Kubernetes configurations!"
+echo "════════════════════════════════════════════════════════"
 ```
 
 ---
@@ -1534,27 +2330,34 @@ spec:
 ## Cleanup (End of Lab)
 
 ```bash
-# Delete all ConfigMaps created in this lab
+# Delete all ConfigMaps created in this lab (Parts 1-9)
 kubectl delete configmap app-config app-properties multi-file-config webapp-config \
   db-config app-settings nginx-config multi-config update-config immutable-config \
-  webapp-settings hot-reload-config app-config-dev app-config-prod nginx-custom 2>/dev/null || true
+  nginx-custom 2>/dev/null || true
 
-# Delete all Secrets created in this lab
+# Delete all Secrets created in this lab (Parts 1-9)
 kubectl delete secret db-credentials file-credentials encoded-secret plaintext-secret \
   my-registry-secret my-tls-secret api-secret db-secret ssh-secret app-secrets \
-  immutable-secret app-secret myapp-tls 2>/dev/null || true
+  immutable-secret app-secret 2>/dev/null || true
 
-# Delete all Pods created in this lab
+# Delete all Pods created in this lab (Parts 1-9)
 kubectl delete pod env-single-demo env-all-demo volume-demo selective-mount-demo \
   secret-env-single secret-env-all secret-volume-demo secret-selective update-demo \
-  optional-demo combined-demo subpath-demo webapp db-client tls-demo env-app 2>/dev/null || true
+  optional-demo combined-demo subpath-demo 2>/dev/null || true
 
-# Delete Deployments
-kubectl delete deployment hot-reload-demo 2>/dev/null || true
+# Delete ShopFast exercise resources
+kubectl delete configmap shopfast-config shopfast-files shopfast-promos \
+  shopfast-config-dev shopfast-config-prod 2>/dev/null || true
+kubectl delete secret shopfast-db-credentials shopfast-api-keys shopfast-certs \
+  shopfast-secrets-dev shopfast-secrets-prod 2>/dev/null || true
+kubectl delete pod shopfast-bad shopfast-api shopfast-secure shopfast-web \
+  shopfast-dev shopfast-prod 2>/dev/null || true
+kubectl delete deployment shopfast-promos 2>/dev/null || true
 
-# Remove lab directory
+# Remove lab directory and exercise files
 cd ~
 rm -rf ~/secrets-configmaps-lab
+rm -f shopfast-*.yaml
 
 # Verify cleanup
 kubectl get configmaps

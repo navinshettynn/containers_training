@@ -391,62 +391,65 @@ env:
 
 ---
 
-## Section 5: Practical Scenarios
+## Section 5: Practical Scenarios (ShopFast E-Commerce Platform)
 
-**49. Write a ConfigMap manifest that:**
-- Contains an application name and version as key-value pairs
-- Contains a multi-line nginx configuration file
+> **Context**: You are a DevOps engineer at TechRetail Inc., managing the "ShopFast" e-commerce platform on Kubernetes.
 
----
-
-**50. Write a Secret manifest that:**
-- Contains database credentials (username and password)
-- Uses stringData for ease of creation
+**49. Scenario: The previous team hardcoded database credentials in the Docker image. Write a ConfigMap and Secret manifest that properly separates:**
+- Non-sensitive settings: APP_NAME, ENVIRONMENT, LOG_LEVEL, CDN_URL
+- Sensitive settings: DB_USER, DB_PASSWORD, API_KEY
 
 ---
 
-**51. Write a Pod manifest that:**
-- Uses a ConfigMap for non-sensitive settings (APP_ENV, LOG_LEVEL)
-- Uses a Secret for sensitive settings (DB_PASSWORD, API_KEY)
-- Loads all keys from both as environment variables
+**50. Scenario: The security team requires all certificates to be mounted with restrictive permissions. Write a Pod manifest that:**
+- Mounts TLS certificates from a Secret to `/etc/ssl/certs`
+- Sets file permissions to 0400 (read-only for owner)
+- Ensures the volume is mounted read-only
 
 ---
 
-**52. Write the commands to:**
-1. Create a ConfigMap from a file named `config.properties`
-2. Create a Secret from literals for username and password
-3. View the ConfigMap contents
-4. Decode and view the Secret password
+**51. Scenario: Marketing needs to enable a "FLASH_SALE" feature flag immediately without redeploying. You have two options in your Pod spec - environment variable or volume mount. Which would you choose and why? Write the ConfigMap and Pod manifest that allows live updates.**
 
 ---
 
-**53. Write a Pod manifest that:**
-- Mounts a ConfigMap containing nginx.conf to `/etc/nginx/nginx.conf`
-- Uses subPath to avoid replacing the entire directory
-- Mounts a TLS Secret to `/etc/nginx/ssl` with 0400 permissions
+**52. Scenario: ShopFast needs to run in dev, staging, and production environments with different configurations. Write the commands to:**
+1. Create a `shopfast-config-dev` ConfigMap with DEBUG=true, LOG_LEVEL=debug
+2. Create a `shopfast-config-prod` ConfigMap with DEBUG=false, LOG_LEVEL=warn
+3. Deploy a Pod using the dev config
+4. Verify the environment variables are set correctly
+5. Show how to switch the same Pod spec to use prod config
 
 ---
 
-**54. Write the commands to troubleshoot a Pod that fails to start with error "configmap not found":**
-1. Check Pod events
-2. List ConfigMaps in the namespace
-3. Verify ConfigMap name matches Pod spec
-4. Create the missing ConfigMap if needed
+**53. Scenario: A developer accidentally exposed the production database password in a ConfigMap instead of a Secret. Write the commands to:**
+1. Identify the exposed password in the ConfigMap
+2. Create a proper Secret with the same credentials
+3. Update the Pod to use the Secret instead
+4. Delete the insecure ConfigMap
+5. Verify the Pod still has access to the credentials
 
 ---
 
-**55. Write a Deployment manifest that:**
-- Uses ConfigMap for application settings
-- Uses Secret for database credentials
-- Includes an annotation to trigger rollout on ConfigMap changes
+**54. Scenario: The application team reports that config file changes aren't being picked up by the running application. The Pod uses a ConfigMap mounted as a volume with subPath. Explain:**
+1. Why subPath prevents automatic updates
+2. Two solutions to fix this issue
+3. Write the commands to force the application to pick up the new config
 
 ---
 
-**56. Write the commands to:**
-1. Create an immutable ConfigMap
-2. Attempt to update it (should fail)
-3. Create a new ConfigMap with updated values
-4. Update the Pod to use the new ConfigMap
+**55. Scenario: ShopFast's API server needs both configuration files and environment variables from the same ConfigMap. Write a complete Pod manifest that:**
+- Loads `APP_ENV` and `LOG_LEVEL` as environment variables
+- Mounts `app-config.yaml` to `/etc/shopfast/config.yaml`
+- Uses only ONE ConfigMap for both purposes
+
+---
+
+**56. Scenario: During a security audit, you need to demonstrate that sensitive data in Secrets is NOT visible through normal kubectl commands. Write the commands that:**
+1. Create a Secret with a password
+2. Show that `kubectl describe` doesn't reveal the password
+3. Show that `kubectl get -o yaml` shows only base64 (not plaintext)
+4. Demonstrate how to properly decode the secret (for audit purposes)
+5. Explain what additional measures should be in place for production
 
 ---
 
@@ -582,183 +585,237 @@ kubectl create configmap app-config-prod --from-file=config/prod/
 
 ### Section 5: Practical Scenarios
 
-**49.**
+**49.** (ShopFast Configuration Separation)
 ```yaml
+# ConfigMap for non-sensitive settings
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: app-config
+  name: shopfast-config
 data:
-  APP_NAME: "My Application"
-  APP_VERSION: "1.0.0"
-  nginx.conf: |
-    events {
-        worker_connections 1024;
-    }
-    http {
-        server {
-            listen 80;
-            server_name localhost;
-            location / {
-                root /usr/share/nginx/html;
-                index index.html;
-            }
-        }
-    }
-```
-
-**50.**
-```yaml
+  APP_NAME: "ShopFast"
+  ENVIRONMENT: "production"
+  LOG_LEVEL: "info"
+  CDN_URL: "https://cdn.shopfast.com"
+---
+# Secret for sensitive settings
 apiVersion: v1
 kind: Secret
 metadata:
-  name: db-credentials
+  name: shopfast-secrets
 type: Opaque
 stringData:
-  username: admin
-  password: S3cur3P@ssw0rd!
+  DB_USER: "shopfast_app"
+  DB_PASSWORD: "Pr0d$ecureP@ss!"
+  API_KEY: "sk_live_abc123xyz789"
 ```
+**Key Learning**: Separating config from secrets allows different access controls and security policies.
 
-**51.**
+**50.** (TLS Certificate Security)
 ```yaml
 apiVersion: v1
 kind: Pod
 metadata:
-  name: app-pod
-spec:
-  containers:
-  - name: app
-    image: myapp:latest
-    envFrom:
-    - configMapRef:
-        name: app-settings
-    - secretRef:
-        name: app-secrets
-```
-
-**52.**
-```bash
-# 1. Create ConfigMap from file
-kubectl create configmap app-config --from-file=config.properties
-
-# 2. Create Secret from literals
-kubectl create secret generic db-secret \
-  --from-literal=username=admin \
-  --from-literal=password='S3cur3P@ss!'
-
-# 3. View ConfigMap contents
-kubectl get configmap app-config -o yaml
-
-# 4. Decode Secret password
-kubectl get secret db-secret -o jsonpath='{.data.password}' | base64 --decode
-```
-
-**53.**
-```yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: nginx-tls
+  name: shopfast-web
 spec:
   containers:
   - name: nginx
     image: nginx:alpine
     volumeMounts:
-    - name: nginx-config
-      mountPath: /etc/nginx/nginx.conf
-      subPath: nginx.conf
     - name: tls-certs
-      mountPath: /etc/nginx/ssl
-      readOnly: true
+      mountPath: /etc/ssl/certs
+      readOnly: true  # Prevents modification
   volumes:
-  - name: nginx-config
-    configMap:
-      name: nginx-config
   - name: tls-certs
     secret:
-      secretName: tls-secret
-      defaultMode: 0400
+      secretName: shopfast-tls
+      defaultMode: 0400  # Owner read-only
 ```
+**Key Learning**: `defaultMode: 0400` ensures only the container's user can read certificates, preventing unauthorized access.
 
-**54.**
-```bash
-# 1. Check Pod events
-kubectl describe pod <pod-name>
+**51.** (Live Configuration Updates)
+**Answer**: Use **volume mount**, not environment variables, because volume mounts auto-update while env vars require Pod restart.
 
-# 2. List ConfigMaps
-kubectl get configmaps
-
-# 3. Get Pod spec and verify ConfigMap name
-kubectl get pod <pod-name> -o yaml | grep -A 5 configMap
-
-# 4. Create missing ConfigMap
-kubectl create configmap <configmap-name> --from-literal=key=value
-# Or
-kubectl apply -f configmap.yaml
-```
-
-**55.**
 ```yaml
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: v1
+kind: ConfigMap
 metadata:
-  name: app-deployment
+  name: shopfast-features
+data:
+  features.conf: |
+    FLASH_SALE=false
+    DISCOUNT=0
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: shopfast-api
 spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: myapp
-  template:
-    metadata:
-      labels:
-        app: myapp
-      annotations:
-        # Change this annotation value to trigger rollout on ConfigMap update
-        configmap-version: "v1"
-    spec:
-      containers:
-      - name: app
-        image: myapp:latest
-        envFrom:
-        - configMapRef:
-            name: app-config
-        - secretRef:
-            name: db-credentials
+  containers:
+  - name: api
+    image: busybox:latest
+    command: ["sh", "-c", "while true; do cat /config/features.conf; sleep 10; done"]
+    volumeMounts:
+    - name: config
+      mountPath: /config
+  volumes:
+  - name: config
+    configMap:
+      name: shopfast-features
 ```
+**Key Learning**: Design apps to read config files periodically for live updates. Env vars are set once at startup.
 
-**56.**
+**52.** (Multi-Environment Deployment)
 ```bash
-# 1. Create immutable ConfigMap
-kubectl apply -f - <<EOF
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: immutable-config-v1
-data:
-  setting: "value1"
-immutable: true
-EOF
+# 1. Create dev ConfigMap
+kubectl create configmap shopfast-config-dev \
+  --from-literal=DEBUG=true \
+  --from-literal=LOG_LEVEL=debug
 
-# 2. Try to update (will fail)
-kubectl patch configmap immutable-config-v1 --type merge -p '{"data":{"setting":"value2"}}'
-# Error: ConfigMap is immutable
+# 2. Create prod ConfigMap
+kubectl create configmap shopfast-config-prod \
+  --from-literal=DEBUG=false \
+  --from-literal=LOG_LEVEL=warn
 
-# 3. Create new ConfigMap with updated values
-kubectl apply -f - <<EOF
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: immutable-config-v2
-data:
-  setting: "value2"
-immutable: true
-EOF
+# 3. Deploy Pod with dev config
+kubectl run shopfast-dev --image=busybox \
+  --overrides='{"spec":{"containers":[{"name":"app","image":"busybox","command":["env"],"envFrom":[{"configMapRef":{"name":"shopfast-config-dev"}}]}]}}'
 
-# 4. Update Pod to use new ConfigMap
-kubectl patch pod <pod-name> --type json -p='[{"op": "replace", "path": "/spec/containers/0/envFrom/0/configMapRef/name", "value": "immutable-config-v2"}]'
-# Or update Deployment spec and apply
-kubectl set env deployment/<deployment-name> --from=configmap/immutable-config-v2
+# 4. Verify environment variables
+kubectl logs shopfast-dev | grep -E "DEBUG|LOG_LEVEL"
+
+# 5. To use prod config, change the configMapRef name:
+#    envFrom:
+#    - configMapRef:
+#        name: shopfast-config-prod  # Changed from dev
 ```
+**Key Learning**: Same image + different ConfigMaps = same app in any environment.
+
+**53.** (Security Incident Response)
+```bash
+# 1. Identify exposed password in ConfigMap
+kubectl get configmap insecure-config -o yaml
+# Look for password fields in data section
+
+# 2. Create proper Secret
+kubectl create secret generic shopfast-db-secret \
+  --from-literal=DB_PASSWORD='ExposedPassword123'
+
+# 3. Update Pod spec to use Secret instead of ConfigMap
+# Change from:
+#   envFrom:
+#   - configMapRef:
+#       name: insecure-config
+# To:
+#   envFrom:
+#   - secretRef:
+#       name: shopfast-db-secret
+
+# 4. Delete insecure ConfigMap
+kubectl delete configmap insecure-config
+
+# 5. Verify Pod still has credentials
+kubectl exec shopfast-api -- env | grep DB_PASSWORD
+```
+**Key Learning**: Regular audits should check for secrets in ConfigMaps. Use RBAC to prevent creation.
+
+**54.** (subPath Update Issue)
+**Why subPath prevents updates**: When using `subPath`, Kubernetes creates a bind mount to the specific file rather than a symlink. The kubelet's ConfigMap sync only updates symlinks.
+
+**Two solutions**:
+1. **Remove subPath** - Mount entire ConfigMap directory, use init container to copy specific files
+2. **Restart Pod** - Use `kubectl rollout restart` or delete/recreate Pod
+
+```bash
+# Force config pickup - restart the deployment
+kubectl rollout restart deployment shopfast-api
+
+# Or delete the Pod (if using a Deployment, it will recreate)
+kubectl delete pod shopfast-api-xxxx
+
+# Alternative: Don't use subPath (mount entire ConfigMap)
+# volumeMounts:
+# - name: config
+#   mountPath: /etc/shopfast/  # Not using subPath
+```
+**Key Learning**: subPath is useful but prevents auto-updates. Choose based on whether you need live updates.
+
+**55.** (Single ConfigMap, Multiple Uses)
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shopfast-unified-config
+data:
+  APP_ENV: "production"
+  LOG_LEVEL: "info"
+  app-config.yaml: |
+    database:
+      pool_size: 10
+    cache:
+      ttl: 300
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: shopfast-api
+spec:
+  containers:
+  - name: api
+    image: busybox:latest
+    command: ["sh", "-c", "echo APP_ENV=$APP_ENV; cat /etc/shopfast/config.yaml; sleep 3600"]
+    # Method 1: Specific keys as env vars
+    env:
+    - name: APP_ENV
+      valueFrom:
+        configMapKeyRef:
+          name: shopfast-unified-config
+          key: APP_ENV
+    - name: LOG_LEVEL
+      valueFrom:
+        configMapKeyRef:
+          name: shopfast-unified-config
+          key: LOG_LEVEL
+    # Method 2: File as volume mount
+    volumeMounts:
+    - name: config-file
+      mountPath: /etc/shopfast/config.yaml
+      subPath: app-config.yaml
+  volumes:
+  - name: config-file
+    configMap:
+      name: shopfast-unified-config
+```
+**Key Learning**: One ConfigMap can serve multiple purposes using selective env vars and volume mounts.
+
+**56.** (Security Audit Demonstration)
+```bash
+# 1. Create Secret with password
+kubectl create secret generic audit-demo \
+  --from-literal=password='SuperSecretP@ss123!'
+
+# 2. Show describe doesn't reveal password
+kubectl describe secret audit-demo
+# Output shows "password: 20 bytes" - not the actual value!
+
+# 3. Show get -o yaml shows only base64
+kubectl get secret audit-demo -o yaml
+# Shows: password: U3VwZXJTZWNyZXRQQHNzMTIzIQ==
+# This is base64, not plaintext (but still decodable!)
+
+# 4. Properly decode for audit
+kubectl get secret audit-demo -o jsonpath='{.data.password}' | base64 --decode
+echo  # Add newline
+
+# 5. Additional production measures:
+#    - Enable encryption at rest (etcd encryption)
+#    - Use RBAC to restrict Secret access
+#    - Audit logging for Secret access
+#    - Consider external secret managers (Vault, AWS Secrets Manager)
+#    - Rotate secrets regularly
+#    - Never commit secrets to Git
+```
+**Key Learning**: Base64 is encoding, NOT encryption. Real security requires RBAC, encryption at rest, and external secret management.
 
 ---
 
