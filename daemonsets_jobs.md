@@ -67,6 +67,8 @@ kind-cluster-worker          Ready    <none>          10m   v1.29.0
 
 ## Part 1: Understanding DaemonSets
 
+> **Important - KIND Cluster Note**: In a 2-node KIND cluster (1 control-plane + 1 worker), DaemonSets without tolerations will only run on the **worker node**. This is because the control-plane has a taint (`node-role.kubernetes.io/control-plane:NoSchedule`). To run on ALL nodes, you must add tolerations - see Exercise 4.
+
 ### What is a DaemonSet?
 
 A DaemonSet ensures that **one copy of a Pod runs on each node** (or a subset of nodes) in the cluster.
@@ -155,8 +157,10 @@ Output shows:
 
 ```
 NAME            DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR   AGE
-simple-daemon   2         2         2       2            2           <none>          30s
+simple-daemon   1         1         1       1            1           <none>          30s
 ```
+
+> **Note**: DESIRED shows 1 (not 2) because the control-plane node has a taint (`node-role.kubernetes.io/control-plane:NoSchedule`) that prevents regular workloads. Only the worker node runs the DaemonSet Pod. To run on all nodes, you need tolerations (see Exercise 4).
 
 | Column | Description |
 |--------|-------------|
@@ -172,7 +176,7 @@ simple-daemon   2         2         2       2            2           <none>     
 kubectl get pods -l app=simple-daemon -o wide
 ```
 
-Notice one Pod runs on each node (control-plane and worker).
+Notice the Pod only runs on the worker node (not the control-plane due to taints).
 
 ### Describe DaemonSet
 
@@ -253,23 +257,21 @@ kubectl get pods -l app=selective-daemon -o wide
 
 Only one Pod runs (on the labeled worker node).
 
-### Add Label to Another Node
-
-```bash
-# Add label to control-plane
-kubectl label nodes kind-cluster-control-plane workload=application
-
-# Watch new Pod appear
-kubectl get pods -l app=selective-daemon -o wide
-```
+> **Note**: Even if you add the `workload=application` label to the control-plane node, no Pod will be scheduled there because the control-plane has a taint. To run DaemonSets on the control-plane, you need to add tolerations (see Exercise 4).
 
 ### Remove Label to See Pod Removal
 
 ```bash
-# Remove label from control-plane
-kubectl label nodes kind-cluster-control-plane workload-
+# Remove label from worker node
+kubectl label nodes kind-cluster-worker workload-
 
 # Watch Pod disappear
+kubectl get pods -l app=selective-daemon -o wide
+
+# Add label back
+kubectl label nodes kind-cluster-worker workload=application
+
+# Watch Pod reappear
 kubectl get pods -l app=selective-daemon -o wide
 ```
 
@@ -418,6 +420,8 @@ kubectl apply -f log-collector.yaml
 kubectl get ds log-collector
 kubectl logs -l app=log-collector --tail=10
 ```
+
+> **Note**: Without tolerations, this DaemonSet runs only on the worker node. In production, you'd add tolerations to collect logs from all nodes.
 
 ### Cleanup DaemonSets Section
 
@@ -911,7 +915,7 @@ kubectl delete cronjob hello-cron configured-cron
 
 ### Exercise 1: Node Monitoring DaemonSet
 
-Create a DaemonSet that monitors node resources:
+Create a DaemonSet that monitors node resources on the worker node:
 
 ```bash
 cd ~/daemonsets-jobs-lab
@@ -952,11 +956,13 @@ EOF
 
 kubectl apply -f monitor-daemon.yaml
 
-# Verify
+# Verify - should show DESIRED=1 (worker node only)
 kubectl get ds node-monitor
 kubectl get pods -l app=node-monitor -o wide
 kubectl logs -l app=node-monitor --tail=10
 ```
+
+> **Note**: This DaemonSet only runs on the worker node. To monitor ALL nodes including control-plane, see Exercise 4 which adds tolerations.
 
 Cleanup:
 
@@ -1068,9 +1074,9 @@ kubectl delete -f backup-cronjob.yaml
 
 ## Optional Advanced Exercises
 
-### Exercise 4: DaemonSet with Tolerations
+### Exercise 4: DaemonSet with Tolerations (Run on ALL Nodes)
 
-Run DaemonSet on all nodes including control-plane:
+This is **the key exercise** for running DaemonSets on all nodes. The control-plane node has a taint that prevents regular workloads. Adding tolerations allows the DaemonSet to run there too.
 
 ```bash
 cat > toleration-daemon.yaml <<'EOF'
@@ -1102,8 +1108,20 @@ spec:
 EOF
 
 kubectl apply -f toleration-daemon.yaml
+
+# Now you should see DESIRED=2 (both control-plane AND worker)
+kubectl get ds all-nodes-daemon
 kubectl get pods -l app=all-nodes -o wide
 ```
+
+Expected output:
+
+```
+NAME               DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR   AGE
+all-nodes-daemon   2         2         2       2            2           <none>          30s
+```
+
+Notice Pods now run on BOTH nodes because of the toleration.
 
 Cleanup:
 
@@ -1149,6 +1167,7 @@ kubectl get jobs ttl-job --watch
 - DaemonSets support **rolling updates** like Deployments
 - Common use cases: logging, monitoring, networking agents
 - Adding/removing node labels dynamically affects Pod placement
+- **Control-plane nodes require tolerations** to run DaemonSet Pods (they have taints by default)
 
 ### Jobs
 
@@ -1201,6 +1220,12 @@ spec:
       labels:
         app: my-daemon
     spec:
+      # Optional: Add to run on control-plane nodes too
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      # Optional: Limit to specific nodes
       nodeSelector:
         key: value
       containers:
@@ -1293,18 +1318,33 @@ kubectl get cronjobs
 
 ### DaemonSet Not Running on All Nodes
 
+This is expected behavior! Control-plane nodes have taints by default.
+
 ```bash
+# Check what taints exist on your nodes
+kubectl describe node kind-cluster-control-plane | grep Taints
+# Output: Taints: node-role.kubernetes.io/control-plane:NoSchedule
+
+kubectl describe node kind-cluster-worker | grep Taints
+# Output: Taints: <none>
+
 # Check DaemonSet status
 kubectl describe ds <name>
 
 # Check for node selector issues
 kubectl get ds <name> -o yaml | grep -A 5 nodeSelector
 
-# Check for tolerations (control-plane nodes have taints)
-kubectl describe node <node-name> | grep Taints
-
 # Verify nodes match selector
 kubectl get nodes --show-labels
+```
+
+**Solution**: Add tolerations to your DaemonSet spec (see Exercise 4):
+
+```yaml
+tolerations:
+- key: node-role.kubernetes.io/control-plane
+  operator: Exists
+  effect: NoSchedule
 ```
 
 ### Job Never Completes
