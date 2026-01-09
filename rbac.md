@@ -201,13 +201,32 @@ spec:
   containers:
   - name: app
     image: busybox:latest
-    command: ["sh", "-c", "echo 'Running as:'; cat /var/run/secrets/kubernetes.io/serviceaccount/namespace; sleep 3600"]
+    command: 
+    - sh
+    - -c
+    - |
+      echo "=== ServiceAccount Info ==="
+      echo "Namespace: $(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)"
+      echo "ServiceAccount: my-app-sa"
+      echo "Token exists: $(test -f /var/run/secrets/kubernetes.io/serviceaccount/token && echo 'yes' || echo 'no')"
+      echo "CA cert exists: $(test -f /var/run/secrets/kubernetes.io/serviceaccount/ca.crt && echo 'yes' || echo 'no')"
+      sleep 3600
   restartPolicy: Never
 EOF
 
 kubectl apply -f pod-with-sa.yaml
 sleep 5
 kubectl logs pod-with-sa
+```
+
+Expected output:
+
+```
+=== ServiceAccount Info ===
+Namespace: default
+ServiceAccount: my-app-sa
+Token exists: yes
+CA cert exists: yes
 ```
 
 ### View Service Account Token (Mounted in Pod)
