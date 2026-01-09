@@ -248,6 +248,7 @@ echo "..."
 ```bash
 kubectl delete pod pod-with-sa
 kubectl delete sa my-app-sa demo-sa
+rm -f custom-sa.yaml pod-with-sa.yaml
 ```
 
 ---
@@ -365,6 +366,7 @@ kubectl describe role configmap-editor
 
 ```bash
 kubectl delete role pod-reader developer configmap-editor
+rm -f role-readonly.yaml role-developer.yaml role-specific.yaml
 ```
 
 ---
@@ -486,6 +488,7 @@ kubectl auth can-i get pods --subresource=log --as=system:serviceaccount:default
 ```bash
 kubectl delete -f rbac-demo.yaml
 kubectl delete rolebinding team-pod-readers
+rm -f rbac-demo.yaml multi-subject-binding.yaml
 ```
 
 ---
@@ -621,6 +624,7 @@ kubectl delete clusterrole node-reader secret-reader
 kubectl delete clusterrolebinding cluster-viewer-nodes
 kubectl delete sa cluster-viewer app-with-secrets
 kubectl delete rolebinding app-secret-reader
+rm -f clusterrole-node-reader.yaml clusterrolebinding-demo.yaml clusterrole-reuse.yaml
 ```
 
 ---
@@ -754,6 +758,7 @@ kubectl auth can-i create roles --as=system:serviceaccount:team-alpha:team-alpha
 
 ```bash
 kubectl delete namespace team-alpha
+rm -f builtin-role-demo.yaml
 ```
 
 ---
@@ -894,6 +899,7 @@ kubectl get sa limited-sa -n rbac-test
 
 ```bash
 kubectl delete namespace rbac-test
+rm -f rbac-test-env.yaml
 ```
 
 ---
@@ -1020,6 +1026,7 @@ kubectl exec -n myapp $POD -- kubectl get pods -n default 2>&1 || echo "(Expecte
 
 ```bash
 kubectl delete namespace myapp
+rm -f app-rbac.yaml
 ```
 
 ---
@@ -1502,54 +1509,61 @@ echo "║                    SecureBank RBAC Access Matrix                      
 echo "╚══════════════════════════════════════════════════════════════════════════════╝"
 echo ""
 
-# Define test subjects
-declare -A SUBJECTS
-SUBJECTS["dev-alice"]="system:serviceaccount:securebank-dev:dev-alice"
-SUBJECTS["ops-diana"]="system:serviceaccount:securebank-prod:ops-diana"
-SUBJECTS["sec-eve"]="system:serviceaccount:securebank-security:sec-eve"
+# Define test subjects (using indexed arrays for consistent ordering)
+SUBJECT_NAMES=("dev-alice" "ops-diana" "sec-eve")
+SUBJECT_IDENTITIES=(
+    "system:serviceaccount:securebank-dev:dev-alice"
+    "system:serviceaccount:securebank-prod:ops-diana"
+    "system:serviceaccount:securebank-security:sec-eve"
+)
 
 # Define namespaces
 NAMESPACES=("securebank-dev" "securebank-prod")
 
-# Define permissions to test
-PERMISSIONS=(
-    "get pods"
-    "create pods"
-    "delete pods"
-    "get secrets"
-    "create deployments"
-    "create roles"
-)
+# Define permissions to test (verb resource pairs)
+VERBS=("get" "create" "delete" "get" "create" "create")
+RESOURCES=("pods" "pods" "pods" "secrets" "deployments" "roles")
 
-printf "%-15s" "Subject"
+# Print header for each namespace
 for ns in "${NAMESPACES[@]}"; do
-    for perm in "${PERMISSIONS[@]}"; do
-        printf "| %-10s" "${perm##* }"
-    done
-done
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-for subject_name in "${!SUBJECTS[@]}"; do
-    subject="${SUBJECTS[$subject_name]}"
-    printf "%-15s" "$subject_name"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "📁 Namespace: $ns"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     
-    for ns in "${NAMESPACES[@]}"; do
-        for perm in "${PERMISSIONS[@]}"; do
-            result=$(kubectl auth can-i $perm --as=$subject -n $ns 2>/dev/null)
+    # Print column headers
+    printf "%-15s" "Subject"
+    for i in "${!VERBS[@]}"; do
+        printf "| %-8s %-11s" "${VERBS[$i]}" "${RESOURCES[$i]}"
+    done
+    echo ""
+    printf "%-15s" "───────────────"
+    for i in "${!VERBS[@]}"; do
+        printf "|─────────────────────"
+    done
+    echo ""
+    
+    # Print permissions for each subject
+    for j in "${!SUBJECT_NAMES[@]}"; do
+        subject_name="${SUBJECT_NAMES[$j]}"
+        subject="${SUBJECT_IDENTITIES[$j]}"
+        printf "%-15s" "$subject_name"
+        
+        for i in "${!VERBS[@]}"; do
+            verb="${VERBS[$i]}"
+            resource="${RESOURCES[$i]}"
+            result=$(kubectl auth can-i $verb $resource --as=$subject -n $ns 2>/dev/null)
             if [ "$result" == "yes" ]; then
-                printf "| %-10s" "✅"
+                printf "| %-19s" "✅ yes"
             else
-                printf "| %-10s" "❌"
+                printf "| %-19s" "❌ no"
             fi
         done
+        echo ""
     done
     echo ""
 done
 
-echo ""
 echo "Legend: ✅ = Allowed, ❌ = Denied"
-echo "Columns are grouped by namespace: securebank-dev | securebank-prod"
 SCRIPT
 
 chmod +x check-access.sh
@@ -1856,6 +1870,12 @@ kubectl delete sa my-app-sa demo-sa demo-app cluster-viewer app-with-secrets lim
 
 # Delete test namespaces
 kubectl delete namespace team-alpha rbac-test myapp securebank-dev securebank-staging securebank-prod securebank-security 2>/dev/null || true
+
+# Clean up YAML files created during the lab (if in rbac-lab directory)
+rm -f custom-sa.yaml pod-with-sa.yaml role-readonly.yaml role-developer.yaml role-specific.yaml 2>/dev/null || true
+rm -f rbac-demo.yaml multi-subject-binding.yaml clusterrole-node-reader.yaml clusterrolebinding-demo.yaml 2>/dev/null || true
+rm -f clusterrole-reuse.yaml builtin-role-demo.yaml rbac-test-env.yaml app-rbac.yaml 2>/dev/null || true
+rm -f dangerous-setup.yaml namespaces.yaml team-accounts.yaml dev-rbac.yaml ops-rbac.yaml security-rbac.yaml check-access.sh 2>/dev/null || true
 
 # Remove lab directory
 cd ~
