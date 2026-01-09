@@ -26,6 +26,7 @@ You will build and deploy **CloudMart**, a simplified e-commerce platform consis
 - Ubuntu VM with Docker and kubectl installed
 - KIND cluster running (created via `install_kind.sh`)
 - Basic familiarity with terminal commands
+- **Direct terminal access** to the VM (SSH into the VM first, then run commands directly)
 
 **Verify your cluster is ready:**
 ```bash
@@ -499,6 +500,8 @@ kubectl apply -f ~/cloudmart/frontend-deployment.yaml
 
 ### Step 2: Expose Frontend via NodePort
 
+> **Note:** If port 30080 is already allocated, change `nodePort` to another value in the 30000-32767 range (e.g., 30081).
+
 ```bash
 cat > ~/cloudmart/frontend-service.yaml <<'EOF'
 apiVersion: v1
@@ -771,6 +774,18 @@ docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' kind
 
 # Or use port-forward
 kubectl port-forward -n cloudmart svc/storefront-service 8080:80
+```
+
+### NodePort Already Allocated
+
+If you see `Invalid value: 30080: provided port is already allocated`:
+
+```bash
+# Option 1: Find what's using the port and change your nodePort value
+kubectl get svc --all-namespaces | grep 30080
+
+# Option 2: Edit the service YAML to use a different port (e.g., 30081)
+# Then update the corresponding curl commands to use the new port
 ```
 
 ### Secret/ConfigMap Not Injected
