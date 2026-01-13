@@ -697,19 +697,58 @@ kubectl apply -f ~/service-mesh-lab/reviews-header-routing.yaml
 
 ### Test Header-Based Routing
 
-The Bookinfo productpage app forwards the `end-user` header when a user logs in through the UI. For CLI testing, we verify the configuration.
+**Important**: The `end-user` header must reach the **reviews service** for routing to work. When you curl productpage externally, productpage only forwards this header if you log in via the web UI. For CLI testing, we call the reviews service directly from inside the mesh.
+
+#### Method 1: Test from Inside the Mesh (Recommended for CLI)
 
 ```bash
-echo "Testing different users..."
+echo "=== Testing Header-Based Routing ==="
 
-# Regular user (no header) - should get v1
-echo "No user header:"
-curl -s "http://$INGRESS_HOST:$INGRESS_PORT/productpage" | grep -q "glyphicon-star" && echo "Has stars" || echo "v1 (no stars)"
+# Get a pod to exec into (ratings pod has curl)
+RATINGS_POD=$(kubectl get pod -l app=ratings -o jsonpath='{.items[0].metadata.name}')
 
-# Note: The Bookinfo app passes the 'end-user' header when you log in.
-# For CLI testing, we'll verify the VirtualService is configured correctly
-kubectl get virtualservice reviews -o yaml | grep -A 20 "match:"
+# Test as "testuser" - should get v2 (black stars in response)
+echo ""
+echo "Request with 'end-user: testuser' header (expect v2):"
+kubectl exec $RATINGS_POD -c ratings -- \
+  curl -s -H "end-user: testuser" http://reviews:9080/reviews/0 | head -3
+
+# Test as "admin" - should get v3 (red stars in response)
+echo ""
+echo "Request with 'end-user: admin' header (expect v3):"
+kubectl exec $RATINGS_POD -c ratings -- \
+  curl -s -H "end-user: admin" http://reviews:9080/reviews/0 | head -3
+
+# Test without header - should get v1 (no ratings in response)
+echo ""
+echo "Request without header (expect v1):"
+kubectl exec $RATINGS_POD -c ratings -- \
+  curl -s http://reviews:9080/reviews/0 | head -3
 ```
+
+> **What to look for in output**:
+> - **v1**: Response has no "ratings" field
+> - **v2**: Response has "ratings" with "color": "black"
+> - **v3**: Response has "ratings" with "color": "red"
+
+#### Method 2: Test via Web UI (Full End-to-End)
+
+The Bookinfo web UI properly propagates the `end-user` header when you log in:
+
+1. Open the productpage in a browser: `http://$INGRESS_HOST:$INGRESS_PORT/productpage`
+2. Click "Sign in" (top right)
+3. Enter username `testuser` (any password works) → You should see **black stars** (v2)
+4. Sign out, then sign in as `admin` → You should see **red stars** (v3)
+5. Without signing in → You should see **no stars** (v1)
+
+#### Verify Configuration
+
+```bash
+# Verify the VirtualService rules are applied correctly
+kubectl get virtualservice reviews -o yaml | grep -A 25 "http:"
+```
+
+> **Why external curl doesn't work directly**: When you curl `http://$INGRESS_HOST:$INGRESS_PORT/productpage` with `-H "end-user: testuser"`, the header reaches productpage, but productpage's Python code only reads this header from session/login, not from the incoming request. This is an application behavior, not an Istio limitation.
 
 > **A/B Testing use cases**:
 > - Show new features to internal testers (match company email domain)
