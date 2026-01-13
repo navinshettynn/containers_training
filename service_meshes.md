@@ -731,15 +731,17 @@ kubectl exec $RATINGS_POD -c ratings -- \
 > - **v2**: Response has "ratings" with "color": "black"
 > - **v3**: Response has "ratings" with "color": "red"
 
-#### Method 2: Test via Web UI (Full End-to-End)
+#### Method 2: Test via Web UI (Optional - Requires Browser Access)
 
-The Bookinfo web UI properly propagates the `end-user` header when you log in:
+If you have browser access (via SSH tunnel, X11, or local VM), you can test via the Bookinfo web UI:
 
-1. Open the productpage in a browser: `http://$INGRESS_HOST:$INGRESS_PORT/productpage`
+1. Open productpage: `http://$INGRESS_HOST:$INGRESS_PORT/productpage`
 2. Click "Sign in" (top right)
-3. Enter username `testuser` (any password works) → You should see **black stars** (v2)
-4. Sign out, then sign in as `admin` → You should see **red stars** (v3)
-5. Without signing in → You should see **no stars** (v1)
+3. Enter username `testuser` (any password) → **black stars** (v2)
+4. Sign out, sign in as `admin` → **red stars** (v3)
+5. Without signing in → **no stars** (v1)
+
+> **Note**: Method 1 (CLI) is recommended for this lab as it doesn't require browser access.
 
 #### Verify Configuration
 
@@ -1172,28 +1174,23 @@ kubectl get pods -n istio-system | grep -E "kiali|prometheus|grafana|jaeger"
 
 Now let's access the observability tools. Since we're using KIND, we'll use port-forwarding to access the dashboards.
 
-### Access Kiali Dashboard (Service Mesh Visualization)
+> **Note for CLI-only environments**: If you don't have browser access (e.g., remote VM without GUI), skip the port-forward commands and use the CLI alternatives provided below. The key observability features are also accessible via `istioctl` and `kubectl` commands.
 
-Kiali provides a visual representation of your service mesh - showing services, their relationships, and traffic flow.
+### Option A: GUI Dashboards (Requires Browser Access)
+
+If you have browser access via SSH tunnel, X11 forwarding, or local VM:
+
+#### Access Kiali Dashboard (Service Mesh Visualization)
 
 ```bash
-# In a new terminal, start port forwarding
-# The '&' runs this in the background so you can continue using the terminal
+# Start port forwarding in background
 kubectl port-forward svc/kiali -n istio-system 20001:20001 &
 
-# Access at http://localhost:20001
+# Access at http://localhost:20001 in your browser
 echo "Kiali Dashboard: http://localhost:20001"
 ```
 
-> **Kiali features**:
-> - Service graph showing traffic flow between services
-> - Health status of services and workloads
-> - Configuration validation (finds misconfigurations)
-> - Wizards for creating routing rules
-
-### Access Grafana Dashboard (Metrics)
-
-Grafana provides detailed metrics dashboards for latency, error rates, and throughput.
+#### Access Grafana Dashboard (Metrics)
 
 ```bash
 kubectl port-forward svc/grafana -n istio-system 3000:3000 &
@@ -1201,11 +1198,7 @@ kubectl port-forward svc/grafana -n istio-system 3000:3000 &
 echo "Grafana Dashboard: http://localhost:3000"
 ```
 
-> **Pre-built dashboards**: Grafana comes with Istio dashboards pre-configured. Look for "Istio Service Dashboard" and "Istio Workload Dashboard" to see detailed metrics.
-
-### Access Jaeger Dashboard (Distributed Tracing)
-
-Jaeger shows distributed traces - following a request as it travels through multiple services.
+#### Access Jaeger Dashboard (Distributed Tracing)
 
 ```bash
 kubectl port-forward svc/tracing -n istio-system 16686:80 &
@@ -1213,50 +1206,101 @@ kubectl port-forward svc/tracing -n istio-system 16686:80 &
 echo "Jaeger Dashboard: http://localhost:16686"
 ```
 
-> **How tracing works**: Istio automatically injects trace headers into requests. As a request flows through services (productpage → reviews → ratings), each hop is recorded. Jaeger visualizes this journey.
-
-### Generate Traffic for Visualization
-
-The dashboards need traffic data to display. Let's generate some requests.
+#### Access Prometheus (Metrics Backend)
 
 ```bash
-# Generate traffic for observability tools
-# This creates data for metrics and traces
-echo "Generating traffic for 60 seconds..."
-for i in {1..60}; do
+kubectl port-forward svc/prometheus -n istio-system 9090:9090 &
+
+echo "Prometheus: http://localhost:9090"
+```
+
+#### Stop Port Forwarding
+
+```bash
+pkill -f "port-forward"
+```
+
+### Option B: CLI-Based Observability (No Browser Required)
+
+For environments without browser access, use these CLI commands to observe the mesh:
+
+#### View Mesh Status and Health
+
+```bash
+# Check overall proxy sync status
+istioctl proxy-status
+
+# Analyze mesh for configuration issues
+istioctl analyze
+```
+
+#### View Traffic Metrics from Envoy
+
+```bash
+# Get productpage pod name
+PRODUCTPAGE_POD=$(kubectl get pod -l app=productpage -o jsonpath='{.items[0].metadata.name}')
+
+# View request counts and success rates
+kubectl exec $PRODUCTPAGE_POD -c istio-proxy -- \
+  pilot-agent request GET stats | grep -E "upstream_rq_total|upstream_rq_2xx|upstream_rq_5xx" | head -15
+
+# View connection stats
+kubectl exec $PRODUCTPAGE_POD -c istio-proxy -- \
+  pilot-agent request GET stats | grep "upstream_cx" | head -10
+```
+
+#### View Service Dependencies
+
+```bash
+# See what services productpage connects to
+istioctl proxy-config cluster $PRODUCTPAGE_POD | grep -E "reviews|details|ratings"
+
+# View routing configuration
+istioctl proxy-config routes $PRODUCTPAGE_POD | head -20
+```
+
+#### Query Prometheus Metrics via CLI
+
+```bash
+# Port-forward Prometheus and query via curl
+kubectl port-forward svc/prometheus -n istio-system 9090:9090 &
+sleep 2
+
+# Query total requests
+curl -s 'http://localhost:9090/api/v1/query?query=istio_requests_total' | head -100
+
+# Query request rate (last 5 minutes)
+curl -s 'http://localhost:9090/api/v1/query?query=rate(istio_requests_total[5m])' | head -100
+
+# Stop port-forward
+pkill -f "port-forward"
+```
+
+### Generate Traffic for Metrics
+
+Whether using GUI or CLI, generate traffic to populate metrics:
+
+```bash
+echo "Generating traffic for 30 seconds..."
+for i in {1..30}; do
   curl -s -o /dev/null "http://$INGRESS_HOST:$INGRESS_PORT/productpage"
   sleep 1
 done
 echo "Traffic generation complete!"
+
+# Now view the metrics
+PRODUCTPAGE_POD=$(kubectl get pod -l app=productpage -o jsonpath='{.items[0].metadata.name}')
+echo ""
+echo "=== Request Statistics ==="
+kubectl exec $PRODUCTPAGE_POD -c istio-proxy -- \
+  pilot-agent request GET stats | grep "upstream_rq_total" | head -10
 ```
 
-> **Tip**: While traffic is generating, open Kiali and watch the service graph animate with live traffic flow!
-
-### View Istio Metrics
-
-Prometheus is the metrics backend. You can query raw metrics here.
-
-```bash
-# View metrics in Prometheus
-kubectl port-forward svc/prometheus -n istio-system 9090:9090 &
-
-# Query example: istio_requests_total
-echo "Prometheus: http://localhost:9090"
-```
-
-> **Useful Prometheus queries**:
-> - `istio_requests_total` - Total request count
-> - `istio_request_duration_milliseconds` - Request latency
-> - `istio_tcp_connections_opened_total` - TCP connections
-
-### Stop Port Forwarding
-
-When you're done exploring the dashboards, stop the port-forward processes.
-
-```bash
-# Stop all port forwards when done
-pkill -f "port-forward"
-```
+> **What the tools provide**:
+> - **Kiali**: Service graph, traffic flow visualization, configuration validation
+> - **Grafana**: Pre-built dashboards for latency, error rates, throughput
+> - **Jaeger**: Distributed tracing to follow requests across services
+> - **Prometheus**: Raw metrics storage and querying
 
 ---
 
