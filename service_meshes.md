@@ -590,12 +590,21 @@ kubectl apply -f ~/service-mesh-lab/mtls-strict.yaml
 ### Verify mTLS is Working
 
 ```bash
-# Check connection security
+# Check that certificates are loaded in the proxy
 istioctl proxy-config secret "$(kubectl get pod -l app=productpage -o jsonpath='{.items[0].metadata.name}')" | head -10
 
-# Verify mTLS between services
-kubectl exec "$(kubectl get pod -l app=productpage -o jsonpath='{.items[0].metadata.name}')" \
-  -c istio-proxy -- curl -s https://reviews:9080 -k 2>&1 | head -5
+# Check mTLS status using proxy-status
+istioctl proxy-status
+
+# Verify mesh-wide PeerAuthentication policy
+kubectl get peerauthentication --all-namespaces
+
+# Check that traffic still flows (mTLS is transparent to applications)
+kubectl exec "$(kubectl get pod -l app=ratings -o jsonpath='{.items[0].metadata.name}')" \
+  -c ratings -- curl -s http://reviews:9080/reviews/0 | head -3
+
+# View TLS mode in Envoy endpoint config (look for "tlsMode": "istio")
+istioctl proxy-config endpoint "$(kubectl get pod -l app=productpage -o jsonpath='{.items[0].metadata.name}')" | grep reviews
 ```
 
 ### View mTLS Policy
