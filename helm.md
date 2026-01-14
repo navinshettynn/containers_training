@@ -13,8 +13,11 @@ Before starting this lab, ensure:
 1. Your Ubuntu VM has Docker installed and running
 2. The KIND cluster has been created using the provided `install_kind.sh` script
 3. **You have completed the previous labs** (kubectl Commands, Pods, Services, Deployments)
+4. **If you completed the Service Meshes lab**, uninstall Istio first (see cleanup section in that lab)
 
 > **Important**: This lab assumes familiarity with kubectl commands, Deployments, Services, ConfigMaps, and Secrets. If you haven't completed the previous labs, do those first.
+
+> **⚠️ Bitnami Charts Notice**: Since August 2025, Bitnami has changed their licensing model. You may see warnings about "limited subset of images/charts available for free" during installations. These warnings do not prevent the lab from working, but some image pulls may be slower or show warnings. The core functionality remains the same for learning purposes.
 
 ### Verify Your Cluster is Running
 
@@ -462,14 +465,12 @@ cd ~/helm-lab
 
 # Create a custom values file
 # This file only needs to contain values you want to OVERRIDE
+# NOTE: We don't override image settings to avoid Bitnami init container issues
 cat > nginx-values.yaml <<'EOF'
 # Custom values for nginx installation
 # Only specify values you want to change from defaults
 
 replicaCount: 3
-
-image:
-  tag: latest
 
 service:
   type: NodePort
@@ -520,13 +521,17 @@ kubectl get pods -n helm-lab -l app.kubernetes.io/instance=nginx-custom --show-l
 ```bash
 # Values file provides base config, --set overrides specific values
 # Here we override replicaCount from 3 (in file) to 1
+# IMPORTANT: We also change the NodePort to avoid conflict with nginx-custom (which uses 30080)
 helm install nginx-override bitnami/nginx \
   --namespace helm-lab \
   -f nginx-values.yaml \
-  --set replicaCount=1
+  --set replicaCount=1 \
+  --set service.nodePorts.http=30081
 ```
 
 The `--set` flag takes precedence over values file.
+
+> **⚠️ NodePort Conflict Warning**: If you install multiple releases using the same NodePort, Kubernetes will reject the installation with "provided port is already allocated". Always use different NodePorts for each release, or use `service.type=ClusterIP` to avoid port allocation entirely.
 
 > **Use case for combining**: Use a values file for environment-specific defaults (staging.yaml, production.yaml), then use `--set` for deployment-specific tweaks without modifying the file.
 
@@ -820,6 +825,26 @@ EOF
 > **Version vs AppVersion**: `version` is the chart version (increment when templates change). `appVersion` is the application version being deployed (e.g., your software release).
 
 ```bash
+# First, remove template files we don't need
+# The default chart includes templates for features we won't use
+# Removing them prevents "nil pointer" errors during linting
+rm -f myapp/templates/ingress.yaml
+rm -f myapp/templates/hpa.yaml
+rm -f myapp/templates/httproute.yaml
+rm -f myapp/templates/serviceaccount.yaml
+rm -rf myapp/templates/tests
+
+# Simplify NOTES.txt (the default one references removed templates)
+cat > myapp/templates/NOTES.txt <<'EOF'
+Thank you for installing {{ .Chart.Name }}.
+
+Your release is named {{ .Release.Name }}.
+
+To learn more about the release, try:
+  $ helm status {{ .Release.Name }}
+  $ helm get all {{ .Release.Name }}
+EOF
+
 # Update values.yaml - the configuration interface for users
 cat > myapp/values.yaml <<'EOF'
 # Default values for myapp
@@ -852,6 +877,8 @@ app:
   message: "Hello from Helm!"
 EOF
 ```
+
+> **Why remove templates?** The `helm create` command generates a full-featured chart with templates for Ingress, HPA, ServiceAccount, etc. These templates reference values we haven't defined. Removing unused templates keeps our chart simple and prevents linting errors.
 
 > **Values file design**: Group related settings together. Use nested structures for complex configurations. Add comments to help users understand each option.
 
@@ -1229,12 +1256,10 @@ cd ~/helm-lab
 ```bash
 # Create values file for product catalog
 # This becomes the source of truth for this service's configuration
+# NOTE: We use Bitnami's default images (don't override image.repository/tag)
+# to avoid image pull issues with Bitnami's chart dependencies
 cat > product-catalog-values.yaml <<'EOF'
 replicaCount: 2                    # Standard: 2 replicas for HA
-
-image:
-  repository: nginx
-  tag: alpine
 
 service:
   type: ClusterIP                  # Internal service, not exposed externally
@@ -1257,6 +1282,8 @@ EOF
 
 > **Why a values file instead of --set?** Values files are version-controllable, self-documenting, and reviewable. Commit this file to Git alongside your application code.
 
+> **⚠️ Image Configuration Note**: Bitnami charts have init containers and dependencies that expect specific images. Overriding `image.repository` or `image.tag` can cause `ErrImagePull` errors. For production, use the chart's default images or ensure all dependent images are also updated.
+
 #### Step 2: Deploy the Service
 
 ```bash
@@ -1272,11 +1299,11 @@ helm install product-catalog bitnami/nginx \
 # Should show 2 pods (replicaCount: 2)
 kubectl get pods -n helm-lab -l app.kubernetes.io/instance=product-catalog
 
-# Should show ClusterIP service
-kubectl get svc -n helm-lab product-catalog
+# Should show ClusterIP service (note: Bitnami adds "-nginx" suffix to service name)
+kubectl get svc -n helm-lab -l app.kubernetes.io/instance=product-catalog
 ```
 
-> **What to verify**: Pod count matches `replicaCount`, service type matches configuration, and labels are applied correctly.
+> **What to verify**: Pod count matches `replicaCount`, service type matches configuration, and labels are applied correctly. Note that Bitnami charts often add suffixes like `-nginx` to resource names.
 
 **📝 Key Learning**: Values files provide consistent, auditable configuration. The same file deploys identical configurations every time, eliminating "works on my machine" problems.
 
@@ -1779,6 +1806,57 @@ kubectl describe pod -n <namespace> <pod-name>
 > 1. Run with `--debug` to see template output
 > 2. Check if it's a Helm issue (template rendering) or Kubernetes issue (deployment)
 > 3. For Kubernetes issues, check events and pod logs
+
+### NodePort Already Allocated
+
+**Symptom**: `Service "xxx" is invalid: spec.ports[0].nodePort: Invalid value: provided port is already allocated`
+
+**Cause**: Another service is already using the same NodePort.
+
+```bash
+# Find which service is using the port
+kubectl get svc -A -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.ports[*].nodePort}{"\n"}{end}' | grep <port>
+
+# Either use a different NodePort or change to ClusterIP
+helm install <release> <chart> --set service.type=ClusterIP
+# OR
+helm install <release> <chart> --set service.nodePorts.http=30081  # different port
+```
+
+> **Best practice**: Use ClusterIP for internal services and only use NodePort when you specifically need external access. This avoids port conflicts entirely.
+
+### Bitnami Image Pull Errors
+
+**Symptom**: Pods stuck in `Init:ErrImagePull` or `ErrImagePull` state when using Bitnami charts.
+
+**Cause**: Bitnami charts have init containers that require specific image versions. Overriding image repository/tag can break dependencies.
+
+```bash
+# Check which images are failing
+kubectl describe pod <pod-name> -n <namespace> | grep -A 5 "Events:"
+
+# Check the full image pull error
+kubectl get events -n <namespace> --field-selector reason=Failed
+```
+
+**Solutions**:
+
+1. **Don't override images** - Use the chart's default images:
+```bash
+# BAD: May cause image pull errors
+helm install myapp bitnami/nginx --set image.repository=nginx --set image.tag=alpine
+
+# GOOD: Use defaults
+helm install myapp bitnami/nginx
+```
+
+2. **If you must use custom images**, ensure all related images are overridden:
+```bash
+# Check all image values in the chart
+helm show values bitnami/nginx | grep -i image
+```
+
+> **Since August 2025**: Bitnami changed their licensing model. Some images require subscriptions. For learning purposes, using default images works fine. In production, review Bitnami's licensing terms.
 
 ### Upgrade Fails
 
