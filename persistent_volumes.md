@@ -16,6 +16,8 @@ Before starting this lab, ensure:
 
 > **Important**: This lab assumes familiarity with kubectl commands, Pod concepts, and basic volume types (emptyDir, hostPath). If you haven't completed the previous labs, do those first.
 
+> **Istio Service Mesh Note**: If your cluster has Istio installed, pods will have an additional sidecar container (`istio-proxy`). When using `kubectl exec` commands, you must specify the container name with `-c <container-name>` (e.g., `-c mysql`, `-c postgres`). The commands in this lab include the container specification for compatibility with Istio-enabled clusters.
+
 ### Verify Your Cluster is Running
 
 ```bash
@@ -528,6 +530,8 @@ kubectl get pv
 
 > **Observe the difference**: `pv-small` (Delete policy) might be gone. `pv-large` (Retain policy) shows "Released" status - data preserved but needs manual cleanup before reuse.
 
+> **KIND Note**: With hostPath volumes, the `Delete` reclaim policy may show "Failed" status instead of deleting the PV. This is because the local-path provisioner cannot actually delete directories on the host filesystem. This is normal behavior in KIND. In cloud environments with proper CSI drivers (AWS EBS, GCP PD, Azure Disk), the Delete policy works correctly and removes the underlying storage.
+
 ---
 
 ## Part 5: Using PVCs in Pods
@@ -995,7 +999,8 @@ MYSQL_POD=$(kubectl get pods -l app=mysql -o jsonpath='{.items[0].metadata.name}
 
 # Connect to MySQL and create data
 # This creates a table and inserts test records
-kubectl exec -it $MYSQL_POD -- mysql -uroot -prootpassword -e "
+# Note: -c mysql specifies the container (required if Istio sidecar is present)
+kubectl exec -it $MYSQL_POD -c mysql -- mysql -uroot -prootpassword -e "
   USE testdb;
   CREATE TABLE messages (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -1037,7 +1042,8 @@ MYSQL_POD=$(kubectl get pods -l app=mysql -o jsonpath='{.items[0].metadata.name}
 echo "New pod: $MYSQL_POD"
 
 # Check if data still exists
-kubectl exec -it $MYSQL_POD -- mysql -uroot -prootpassword -e "USE testdb; SELECT * FROM messages;"
+# Note: -c mysql specifies the container (required if Istio sidecar is present)
+kubectl exec -it $MYSQL_POD -c mysql -- mysql -uroot -prootpassword -e "USE testdb; SELECT * FROM messages;"
 ```
 
 **🎉 The data survives pod deletion!**
@@ -1071,6 +1077,8 @@ What happens when your application needs more space? PVC expansion lets you grow
 | StorageClass must have `allowVolumeExpansion: true` | Not all storage supports expansion |
 | Can only **increase** size, never decrease | Data safety - can't shrink a filesystem |
 | Some provisioners require Pod restart | Filesystem must be resized |
+
+> **KIND Limitation**: The `standard` StorageClass in KIND has `allowVolumeExpansion: false`. The expansion commands in this section **will fail** with a "Forbidden" error. This demonstrates what happens when expansion isn't supported. In production environments with AWS EBS, GCP PD, or Azure Disk, expansion works seamlessly.
 
 ### Create an Expandable PVC
 
@@ -1806,7 +1814,8 @@ POSTGRES_POD=$(kubectl get pods -l app=postgres -o jsonpath='{.items[0].metadata
 echo "PostgreSQL pod: $POSTGRES_POD"
 
 # Create tables and insert business data
-kubectl exec -it $POSTGRES_POD -- psql -U admin -d datavault -c "
+# Note: -c postgres specifies the container (required if Istio sidecar is present)
+kubectl exec -it $POSTGRES_POD -c postgres -- psql -U admin -d datavault -c "
 -- Create backup metadata table
 CREATE TABLE IF NOT EXISTS backup_jobs (
   id SERIAL PRIMARY KEY,
@@ -1832,7 +1841,8 @@ SELECT * FROM backup_jobs;
 ```bash
 echo "=== Before Pod Deletion ==="
 echo "Pod: $POSTGRES_POD"
-kubectl exec -it $POSTGRES_POD -- psql -U admin -d datavault -c "SELECT count(*) as record_count FROM backup_jobs;"
+# Note: -c postgres specifies the container (required if Istio sidecar is present)
+kubectl exec -it $POSTGRES_POD -c postgres -- psql -U admin -d datavault -c "SELECT count(*) as record_count FROM backup_jobs;"
 
 echo ""
 echo "Simulating pod crash by deleting it..."
@@ -1859,7 +1869,8 @@ echo "New PostgreSQL pod: $POSTGRES_POD"
 
 echo ""
 echo "=== After Pod Recovery ==="
-kubectl exec -it $POSTGRES_POD -- psql -U admin -d datavault -c "SELECT * FROM backup_jobs;"
+# Note: -c postgres specifies the container (required if Istio sidecar is present)
+kubectl exec -it $POSTGRES_POD -c postgres -- psql -U admin -d datavault -c "SELECT * FROM backup_jobs;"
 ```
 
 **🎉 All three customer records survived the pod crash!**
